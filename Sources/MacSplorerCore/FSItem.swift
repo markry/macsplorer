@@ -1,0 +1,104 @@
+import Foundation
+
+/// A single filesystem entry (file or folder) plus the metadata MacSplorer
+/// displays. It's a reference type so `NSOutlineView` can track tree nodes by
+/// identity and we can cache lazily-loaded folder children.
+public final class FSItem {
+    public let url: URL
+    /// Full on-disk name including extension — always shown (a core ask: never
+    /// hide suffixes the way Finder can).
+    public let name: String
+    public let isDirectory: Bool
+    /// App/document bundles (.app, .rtfd, …): directories on disk, but the user
+    /// thinks of them as single items, so we don't let the tree descend into them.
+    public let isPackage: Bool
+    /// True for symbolic links / aliases. `isDirectory`/`isPackage` describe the
+    /// link's *target*, so a symlink to a folder browses and trees like a folder.
+    public let isSymlink: Bool
+    public let modificationDate: Date?
+    /// File size in bytes; nil for directories (shown blank, like Explorer).
+    public let byteSize: Int?
+    /// Localized kind, e.g. "Folder", "Plain Text Document", "PNG image".
+    public let typeDescription: String?
+
+    private static let resourceKeys: [URLResourceKey] = [
+        .isDirectoryKey, .isPackageKey, .isSymbolicLinkKey,
+        .contentModificationDateKey, .fileSizeKey, .totalFileAllocatedSizeKey,
+        .localizedTypeDescriptionKey, .localizedNameKey,
+    ]
+
+    private var cachedFolderChildren: [FSItem]?
+    private var cachedChildrenIncludeHidden = false
+
+    public init(url: URL) {
+        self.url = url
+        let values = try? url.resourceValues(forKeys: Set(FSItem.resourceKeys))
+        let last = url.lastPathComponent
+        // lastPathComponent is empty for a volume root ("/") — fall back to the
+        // localized volume name there, but otherwise keep the literal filename
+        // so extensions are always visible.
+        self.name = last.isEmpty ? (values?.localizedName ?? url.path) : last
+
+        let symlink = values?.isSymbolicLink ?? false
+        self.isSymlink = symlink
+
+        var directory = values?.isDirectory ?? false
+        var package = values?.isPackage ?? false
+        if symlink {
+            // .isDirectoryKey reports the link itself (false for a symlink), so
+            // resolve and classify by the target — otherwise symlinked folders
+            // (e.g. ~/OneDrive) are treated as files: absent from the tree and
+            // sorted among files instead of grouped with folders.
+            let resolved = url.resolvingSymlinksInPath()
+            if let target = try? resolved.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]) {
+                directory = target.isDirectory ?? false
+                package = target.isPackage ?? false
+            }
+        }
+        self.isDirectory = directory
+        self.isPackage = package
+        self.modificationDate = values?.contentModificationDate
+        self.byteSize = directory ? nil : (values?.fileSize ?? values?.totalFileAllocatedSize)
+        self.typeDescription = values?.localizedTypeDescription
+    }
+
+    /// All entries in a directory (files + folders), unsorted. Returns [] on
+    /// failure (e.g. permission denied) rather than throwing.
+    public static func contents(of directory: URL,
+                                includeHidden: Bool = false) -> [FSItem] {
+        let options: FileManager.DirectoryEnumerationOptions =
+            includeHidden ? [] : [.skipsHiddenFiles]
+        // Enumerate through the *resolved* directory: listing a symlink path
+        // directly (e.g. ~/OneDrive -> ~/Library/CloudStorage/OneDrive-Personal)
+        // fails, while the resolved target lists fine. Re-base each child under
+        // the original `directory` so the address bar and tree keep the friendly
+        // symlink-based path rather than exposing the CloudStorage location.
+        let enumerationURL = directory.resolvingSymlinksInPath()
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: enumerationURL,
+            includingPropertiesForKeys: resourceKeys,
+            options: options
+        ) else { return [] }
+        return urls.map { FSItem(url: directory.appendingPathComponent($0.lastPathComponent)) }
+    }
+
+    /// Folder-only children for the left tree — lazy, cached, name-sorted. The
+    /// cache is keyed by `includeHidden` so toggling hidden files re-reads.
+    public func folderChildren(includeHidden: Bool = false) -> [FSItem] {
+        if let cached = cachedFolderChildren, cachedChildrenIncludeHidden == includeHidden {
+            return cached
+        }
+        let folders = FSItem.contents(of: url, includeHidden: includeHidden)
+            .filter { $0.isDirectory && !$0.isPackage }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        cachedFolderChildren = folders
+        cachedChildrenIncludeHidden = includeHidden
+        return folders
+    }
+
+    /// Drop cached children so the next access re-reads from disk.
+    public func invalidateChildren() { cachedFolderChildren = nil }
+
+    /// Any real (non-package) directory gets a disclosure triangle in the tree.
+    public var isExpandableInTree: Bool { isDirectory && !isPackage }
+}

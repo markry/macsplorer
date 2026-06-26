@@ -4,12 +4,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.mainMenu = Self.makeMainMenu()
-
         let controller = MainWindowController()
         controller.showWindow(nil)
         mainWindowController = controller
 
+        NSApp.mainMenu = makeMainMenu()
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -17,12 +16,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
-    // Minimal main menu so the app has a proper menu bar (About + ⌘Q). The full
-    // File/Edit/View menus arrive with the file-operations milestone.
-    private static func makeMainMenu() -> NSMenu {
+    // MARK: Menu
+
+    private func makeMainMenu() -> NSMenu {
         let appName = "MacSplorer"
         let mainMenu = NSMenu()
 
+        // Application menu (About + Quit).
         let appItem = NSMenuItem()
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
@@ -34,6 +34,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: "Quit \(appName)",
                         action: #selector(NSApplication.terminate(_:)),
                         keyEquivalent: "q")
+
+        // View menu (Show Hidden Files — ⌘⇧. like Finder).
+        let viewItem = NSMenuItem()
+        mainMenu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+        let hidden = NSMenuItem(title: "Show Hidden Files",
+                                action: #selector(toggleHiddenFiles(_:)),
+                                keyEquivalent: ".")
+        hidden.keyEquivalentModifierMask = [.command, .shift]
+        hidden.target = self
+        viewMenu.addItem(hidden)
+
         return mainMenu
+    }
+
+    @objc private func toggleHiddenFiles(_ sender: NSMenuItem) {
+        mainWindowController?.toggleShowHiddenFiles()
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleHiddenFiles(_:)) {
+            menuItem.state = (mainWindowController?.showHiddenFiles ?? false) ? .on : .off
+        }
+        return true
     }
 }
