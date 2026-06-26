@@ -38,6 +38,9 @@ final class DetailsTableController: NSObject {
         tableView.fileActions = self
         tableView.action = #selector(handleSingleClick)
         tableView.doubleAction = #selector(handleDoubleClick)
+        tableView.registerForDraggedTypes([.fileURL])
+        tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
+        tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         configureSorting()
     }
 
@@ -359,6 +362,85 @@ extension DetailsTableController: NSTextFieldDelegate {
             }
         }
         reload() // restore label appearance / original name
+    }
+}
+
+// MARK: - Drag & drop
+
+extension DetailsTableController {
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        guard row < items.count else { return nil }
+        return items[row].url as NSURL
+    }
+
+    func tableView(_ tableView: NSTableView,
+                   validateDrop info: NSDraggingInfo,
+                   proposedRow row: Int,
+                   proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+        guard let destination = dropDestination(forRow: row, operation: dropOperation) else { return [] }
+        // Dropping into the current folder: highlight the whole list, not a row.
+        if samePath(destination, folder) {
+            tableView.setDropRow(-1, dropOperation: .on)
+        }
+        return dragOperation(for: info)
+    }
+
+    func tableView(_ tableView: NSTableView,
+                   acceptDrop info: NSDraggingInfo,
+                   row: Int,
+                   dropOperation: NSTableView.DropOperation) -> Bool {
+        guard let destination = dropDestination(forRow: row, operation: dropOperation) else { return false }
+        let urls = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        guard !urls.isEmpty else { return false }
+
+        let move = dragOperation(for: info) == .move
+        var landed: [String] = []
+        for url in urls where !isSelfOrDescendant(url, of: destination) {
+            do {
+                let dest = move ? try FileOperations.move(url, into: destination)
+                                : try FileOperations.copy(url, into: destination)
+                landed.append(dest.lastPathComponent)
+            } catch {
+                NSSound.beep()
+            }
+        }
+
+        if samePath(destination, folder) {
+            didMutate(destination, selecting: landed) // dropped into the visible folder
+        } else {
+            reload()                                   // a move may have emptied rows here
+            if let folder { onMutated?(folder) }
+            onMutated?(destination)                    // refresh the target subfolder's subtree
+        }
+        return true
+    }
+
+    /// A drop targets a subfolder row (drop ON a folder) or the current folder.
+    private func dropDestination(forRow row: Int, operation: NSTableView.DropOperation) -> URL? {
+        if operation == .on, row >= 0, row < items.count,
+           items[row].isDirectory, !items[row].isPackage {
+            return items[row].url
+        }
+        return folder
+    }
+
+    /// Move by default; copy when ⌥ is held (or when move isn't offered).
+    private func dragOperation(for info: NSDraggingInfo) -> NSDragOperation {
+        let allowed = info.draggingSourceOperationMask
+        if NSEvent.modifierFlags.contains(.option) { return allowed.contains(.copy) ? .copy : [] }
+        if allowed.contains(.move) { return .move }
+        return allowed.contains(.copy) ? .copy : []
+    }
+
+    private func isSelfOrDescendant(_ url: URL, of directory: URL) -> Bool {
+        let target = url.standardizedFileURL.path
+        let dir = directory.standardizedFileURL.path
+        return dir == target || dir.hasPrefix(target + "/")
+    }
+
+    private func samePath(_ a: URL?, _ b: URL?) -> Bool {
+        a?.standardizedFileURL.path == b?.standardizedFileURL.path
     }
 }
 
