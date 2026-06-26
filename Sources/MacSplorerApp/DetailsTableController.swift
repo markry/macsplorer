@@ -100,7 +100,12 @@ final class DetailsTableController: NSObject {
 
         let text = NSTextField(labelWithString: "")
         text.translatesAutoresizingMaskIntoConstraints = false
-        text.lineBreakMode = .byTruncatingTail
+        // Single-line keeps row heights uniform — no wrapping/shifting on hover.
+        // Names truncate in the middle so the tail + extension stay visible
+        // (Finder style); other columns truncate at the tail.
+        text.usesSingleLineMode = true
+        text.maximumNumberOfLines = 1
+        text.lineBreakMode = (id.rawValue == "name") ? .byTruncatingMiddle : .byTruncatingTail
         text.font = .systemFont(ofSize: 13)
         cell.textField = text
         cell.addSubview(text)
@@ -192,9 +197,14 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
         case "name":
             cell.imageView?.image = NSWorkspace.shared.icon(forFile: item.url.path)
             if self.tableView.hoverEnabled && self.tableView.hoveredRow == row {
+                // Carry the single-line middle-truncation through the attributed
+                // (underlined) string too, so hovering can't make a name wrap.
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.lineBreakMode = .byTruncatingMiddle
                 cell.textField?.attributedStringValue = NSAttributedString(
                     string: item.name,
-                    attributes: [.underlineStyle: NSUnderlineStyle.single.rawValue])
+                    attributes: [.underlineStyle: NSUnderlineStyle.single.rawValue,
+                                 .paragraphStyle: paragraph])
             } else {
                 cell.textField?.stringValue = item.name
             }
