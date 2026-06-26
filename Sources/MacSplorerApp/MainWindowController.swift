@@ -2,17 +2,29 @@ import AppKit
 import MacSplorerCore
 
 /// The main MacSplorer window: a copyable path/address bar on top, a two-pane
-/// split (folder tree | details table) in the middle, and a status bar below.
-///
-/// This first checkpoint wires the full layout and controls but no data — the
-/// filesystem model gets plugged into these data sources next.
+/// split (folder tree | details table), and a status bar below. It coordinates
+/// the two pane controllers and address-bar navigation.
 final class MainWindowController: NSWindowController {
 
     private let addressField = NSTextField()
     private let statusLabel = NSTextField(labelWithString: "")
     private let splitView = NSSplitView()
-    private let outlineView = NSOutlineView()   // left: folder tree
-    private let tableView = NSTableView()        // right: details
+    private let outlineView = NSOutlineView()
+    private let tableView = NSTableView()
+
+    private var treeController: FolderTreeController!
+    private var detailsController: DetailsTableController!
+
+    private(set) var showHiddenFiles = false
+
+    /// Toggle hidden (dot) files in both panes, keeping the current location.
+    func toggleShowHiddenFiles() {
+        showHiddenFiles.toggle()
+        treeController.showHiddenFiles = showHiddenFiles
+        detailsController.showHiddenFiles = showHiddenFiles
+        detailsController.reload()
+        treeController.refresh(revealing: detailsController.folder)
+    }
 
     convenience init() {
         let window = NSWindow(
@@ -27,7 +39,62 @@ final class MainWindowController: NSWindowController {
         window.center()
         self.init(window: window)
         buildLayout()
+        wireControllers()
     }
+
+    // MARK: Navigation
+
+    /// Update the details table + address bar + title for `url`. Idempotent, so
+    /// the tree-reveal round-trip can call back in without reloading or looping.
+    private func showFolder(_ url: URL) {
+        guard detailsController.folder?.standardizedFileURL.path != url.standardizedFileURL.path
+        else { return }
+        detailsController.show(folder: url)
+        addressField.stringValue = url.path
+        let name = url.lastPathComponent
+        window?.title = name.isEmpty ? "MacSplorer" : name
+    }
+
+    /// External navigation (address bar, double-click in the details pane):
+    /// show the folder AND reveal/select it in the left tree so the tree tracks
+    /// the current location.
+    func navigate(to url: URL) {
+        showFolder(url)
+        treeController.reveal(url)
+    }
+
+    @objc private func addressEntered() {
+        let path = (addressField.stringValue as NSString).expandingTildeInPath
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            navigate(to: URL(fileURLWithPath: path))
+        } else {
+            NSSound.beep()
+        }
+    }
+
+    private func wireControllers() {
+        treeController = FolderTreeController(outlineView: outlineView)
+        detailsController = DetailsTableController(tableView: tableView)
+
+        // Tree click: just show the folder (the tree is already there — don't
+        // re-reveal, which would loop). Double-click in details: navigate +
+        // reveal so the tree follows.
+        treeController.onSelect = { [weak self] url in self?.showFolder(url) }
+        detailsController.onOpenFolder = { [weak self] url in self?.navigate(to: url) }
+        detailsController.onStatus = { [weak self] status in
+            self?.statusLabel.stringValue = status
+        }
+
+        addressField.target = self
+        addressField.action = #selector(addressEntered)
+
+        // Selecting Home fires onSelect → navigate, populating the details pane.
+        treeController.selectHome()
+    }
+
+    // MARK: Layout
 
     private func buildLayout() {
         guard let contentView = window?.contentView else { return }
@@ -83,7 +150,7 @@ final class MainWindowController: NSWindowController {
     }
 
     private func configureStatusLabel() {
-        statusLabel.stringValue = "MacSplorer \(MacSplorer.version) — ready"
+        statusLabel.stringValue = "MacSplorer \(MacSplorer.version)"
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -95,8 +162,6 @@ final class MainWindowController: NSWindowController {
         outlineView.addTableColumn(nameColumn)
         outlineView.outlineTableColumn = nameColumn
         outlineView.headerView = nil
-        outlineView.dataSource = self
-        outlineView.delegate = self
 
         let scroll = NSScrollView()
         scroll.documentView = outlineView
@@ -121,12 +186,11 @@ final class MainWindowController: NSWindowController {
             column.minWidth = 48
             tableView.addTableColumn(column)
         }
-        tableView.dataSource = self
-        tableView.delegate = self
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         tableView.allowsColumnReordering = true
         tableView.allowsColumnResizing = true
+        tableView.allowsMultipleSelection = true
         tableView.autosaveName = "MacSplorerDetailsTable"
         tableView.autosaveTableColumns = true
 
@@ -138,18 +202,4 @@ final class MainWindowController: NSWindowController {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         return scroll
     }
-}
-
-// MARK: - Folder tree data (placeholder: empty until the model is wired)
-
-extension MainWindowController: NSOutlineViewDataSource, NSOutlineViewDelegate {
-    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int { 0 }
-    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any { NSObject() }
-    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { false }
-}
-
-// MARK: - Details table data (placeholder: empty until the model is wired)
-
-extension MainWindowController: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int { 0 }
 }
