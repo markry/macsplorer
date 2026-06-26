@@ -14,6 +14,33 @@ final class FolderTreeController: NSObject {
     /// Whether hidden (dot) folders are shown. Set, then call `refresh`.
     var showHiddenFiles = false
 
+    /// Items whose subfolder-check is currently running, to avoid duplicate work.
+    private var pendingSubfolderChecks = Set<ObjectIdentifier>()
+
+    /// Determine off the main thread whether `item` actually has subfolders, so
+    /// the disclosure triangle only appears when expanding would do something.
+    /// Called from `isItemExpandable`, so it only ever runs for nodes the tree is
+    /// currently displaying — never a full-hierarchy walk.
+    private func scheduleHasSubfoldersCheck(for item: FSItem) {
+        let key = ObjectIdentifier(item)
+        guard !pendingSubfolderChecks.contains(key) else { return }
+        pendingSubfolderChecks.insert(key)
+        let includeHidden = showHiddenFiles
+        let url = item.url
+        DispatchQueue.global(qos: .utility).async {
+            let hasSubfolders = FSItem.directoryHasSubfolders(at: url, includeHidden: includeHidden)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.pendingSubfolderChecks.remove(key)
+                guard includeHidden == self.showHiddenFiles else { return } // stale toggle
+                item.setHasSubfolders(hasSubfolders, includeHidden: includeHidden)
+                if !hasSubfolders {
+                    self.outlineView.reloadItem(item) // remove the now-unneeded triangle
+                }
+            }
+        }
+    }
+
     /// Rebuild the tree (e.g. after toggling hidden files) and re-reveal the
     /// given location so the user doesn't lose their place.
     func refresh(revealing url: URL?) {
@@ -134,7 +161,14 @@ extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        (item as? FSItem)?.isExpandableInTree ?? false
+        guard let fsItem = item as? FSItem, fsItem.isExpandableInTree else { return false }
+        if let known = fsItem.knownHasSubfolders(includeHidden: showHiddenFiles) {
+            return known
+        }
+        // Unknown: show the triangle optimistically, confirm in the background,
+        // and drop it later if the folder turns out to have no subfolders.
+        scheduleHasSubfoldersCheck(for: fsItem)
+        return true
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {

@@ -29,6 +29,8 @@ public final class FSItem {
 
     private var cachedFolderChildren: [FSItem]?
     private var cachedChildrenIncludeHidden = false
+    private var cachedHasSubfolders: Bool?
+    private var cachedHasSubfoldersIncludeHidden = false
 
     public init(url: URL) {
         self.url = url
@@ -97,8 +99,53 @@ public final class FSItem {
     }
 
     /// Drop cached children so the next access re-reads from disk.
-    public func invalidateChildren() { cachedFolderChildren = nil }
+    public func invalidateChildren() {
+        cachedFolderChildren = nil
+        cachedHasSubfolders = nil
+    }
 
-    /// Any real (non-package) directory gets a disclosure triangle in the tree.
+    /// Gate for tree expansion: only a real (non-package) directory can ever show
+    /// a disclosure triangle. Whether one is *actually* shown also depends on
+    /// `knownHasSubfolders`, determined lazily off the main thread.
     public var isExpandableInTree: Bool { isDirectory && !isPackage }
+
+    /// Cached "has at least one subfolder?" answer for the given hidden setting,
+    /// or nil if not yet determined. Main-thread only (pairs with setHasSubfolders).
+    public func knownHasSubfolders(includeHidden: Bool) -> Bool? {
+        guard let value = cachedHasSubfolders,
+              cachedHasSubfoldersIncludeHidden == includeHidden else { return nil }
+        return value
+    }
+
+    public func setHasSubfolders(_ value: Bool, includeHidden: Bool) {
+        cachedHasSubfolders = value
+        cachedHasSubfoldersIncludeHidden = includeHidden
+    }
+
+    /// Pure, side-effect-free check suitable for a background queue: does `url`
+    /// contain at least one non-package subfolder? Stops at the first match.
+    public static func directoryHasSubfolders(at url: URL, includeHidden: Bool) -> Bool {
+        let options: FileManager.DirectoryEnumerationOptions =
+            includeHidden ? [] : [.skipsHiddenFiles]
+        let enumerationURL = url.resolvingSymlinksInPath()
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: enumerationURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey],
+            options: options
+        ) else { return false }
+        for child in urls {
+            guard let values = try? child.resourceValues(
+                forKeys: [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey]) else { continue }
+            var isDir = values.isDirectory ?? false
+            var isPkg = values.isPackage ?? false
+            if values.isSymbolicLink == true,
+               let target = try? child.resolvingSymlinksInPath()
+                .resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]) {
+                isDir = target.isDirectory ?? false
+                isPkg = target.isPackage ?? false
+            }
+            if isDir && !isPkg { return true }
+        }
+        return false
+    }
 }
