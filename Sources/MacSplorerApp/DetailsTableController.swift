@@ -14,6 +14,12 @@ final class DetailsTableController: NSObject {
     /// Fresh status-bar text (item / selection counts).
     var onStatus: ((String) -> Void)?
 
+    /// Called after a file operation mutates `folder`, so the coordinator can
+    /// refresh the tree's view of it.
+    var onMutated: ((URL) -> Void)?
+
+    private var renamingRow = -1
+
     /// Whether hidden (dot) files are shown. Set, then call `reload`.
     var showHiddenFiles = false
 
@@ -29,6 +35,7 @@ final class DetailsTableController: NSObject {
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
+        tableView.fileActions = self
         tableView.action = #selector(handleSingleClick)
         tableView.doubleAction = #selector(handleDoubleClick)
         configureSorting()
@@ -196,6 +203,10 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
         switch column.identifier.rawValue {
         case "name":
             cell.imageView?.image = NSWorkspace.shared.icon(forFile: item.url.path)
+            // Reset any edit-mode appearance left on a reused cell.
+            cell.textField?.isEditable = false
+            cell.textField?.isBordered = false
+            cell.textField?.drawsBackground = false
             if self.tableView.hoverEnabled && self.tableView.hoveredRow == row {
                 // Carry the single-line middle-truncation through the attributed
                 // (underlined) string too, so hovering can't make a name wrap.
@@ -227,6 +238,127 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         emitStatus()
+    }
+}
+
+// MARK: - File-operation commands
+
+extension DetailsTableController: HoverTableFileActions {
+    var hasSelection: Bool { !tableView.selectedRowIndexes.isEmpty }
+    var canPaste: Bool { Clipboard.shared.canPaste }
+
+    func copySelectedItems() {
+        let urls = selectedURLs()
+        guard !urls.isEmpty else { return }
+        Clipboard.shared.set(urls, operation: .copy)
+    }
+
+    func cutSelectedItems() {
+        let urls = selectedURLs()
+        guard !urls.isEmpty else { return }
+        Clipboard.shared.set(urls, operation: .cut)
+    }
+
+    func pasteIntoFolder() {
+        guard let folder else { return }
+        let (urls, move) = Clipboard.shared.pasteSource()
+        guard !urls.isEmpty else { return }
+        var pasted: [String] = []
+        for url in urls {
+            do {
+                let dest = move ? try FileOperations.move(url, into: folder)
+                                : try FileOperations.copy(url, into: folder)
+                pasted.append(dest.lastPathComponent)
+            } catch {
+                NSSound.beep()
+            }
+        }
+        if move { Clipboard.shared.clearAfterMove() }
+        didMutate(folder, selecting: pasted)
+    }
+
+    func trashSelectedItems() {
+        let urls = selectedURLs()
+        guard !urls.isEmpty, let folder else { return }
+        for url in urls {
+            do { _ = try FileOperations.moveToTrash(url) } catch { NSSound.beep() }
+        }
+        didMutate(folder)
+    }
+
+    func renameSelectedItem() {
+        beginRename(row: tableView.selectedRow)
+    }
+
+    /// Create a new folder in the current directory, then start renaming it.
+    func makeNewFolder() {
+        guard let folder else { return }
+        do {
+            let url = try FileOperations.newFolder(in: folder)
+            didMutate(folder, selecting: [url.lastPathComponent], renameFirst: true)
+        } catch {
+            NSSound.beep()
+        }
+    }
+
+    private func selectedURLs() -> [URL] {
+        tableView.selectedRowIndexes.filter { $0 < items.count }.map { items[$0].url }
+    }
+
+    /// Re-list `folder`, refresh the tree, and optionally select/begin-rename the
+    /// items with the given names.
+    private func didMutate(_ folder: URL, selecting names: [String] = [], renameFirst: Bool = false) {
+        reload()
+        onMutated?(folder)
+        guard !names.isEmpty else { return }
+        let wanted = Set(names)
+        let rows = items.enumerated()
+            .filter { wanted.contains($0.element.url.lastPathComponent) }
+            .map(\.offset)
+        guard !rows.isEmpty else { return }
+        tableView.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
+        if renameFirst, let first = rows.first { beginRename(row: first) }
+    }
+}
+
+// MARK: - In-place rename
+
+extension DetailsTableController: NSTextFieldDelegate {
+    func beginRename(row: Int) {
+        guard row >= 0, row < items.count,
+              let nameColumn = tableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == "name" })
+        else { return }
+        tableView.scrollRowToVisible(row)
+        guard let cell = tableView.view(atColumn: nameColumn, row: row, makeIfNecessary: true) as? NSTableCellView,
+              let field = cell.textField else { return }
+        renamingRow = row
+        field.isEditable = true
+        field.isBordered = true
+        field.drawsBackground = true
+        field.delegate = self
+        field.stringValue = items[row].name // plain text, drop any hover underline
+        tableView.editColumn(nameColumn, row: row, with: nil, select: true)
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard renamingRow >= 0, renamingRow < items.count else { return }
+        let row = renamingRow
+        renamingRow = -1
+        let item = items[row]
+        let movement = (obj.userInfo?["NSTextMovement"] as? Int) ?? 0
+        let canceled = movement == NSTextMovement.cancel.rawValue
+        let newName = (obj.object as? NSTextField)?.stringValue ?? item.name
+        if !canceled, newName.trimmingCharacters(in: .whitespacesAndNewlines) != item.name {
+            do {
+                let dest = try FileOperations.rename(item.url, to: newName)
+                didMutate(folder ?? item.url.deletingLastPathComponent(),
+                          selecting: [dest.lastPathComponent])
+                return
+            } catch {
+                NSSound.beep()
+            }
+        }
+        reload() // restore label appearance / original name
     }
 }
 

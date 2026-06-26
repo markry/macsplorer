@@ -14,7 +14,23 @@ import AppKit
 /// with ⇧/⌘ down) doesn't thrash the selection, and an existing selection isn't
 /// abandoned until you've dwelled on a new target. A plain click still opens
 /// immediately. With `hoverEnabled` off it's a plain table (click to select).
-final class HoverTableView: NSTableView {
+///
+/// It also vends the file-operation commands (Cut/Copy/Paste/Rename/Move-to-
+/// Trash) to its `fileActions` delegate via the responder chain, so ⌘C/⌘V act
+/// on the address bar's text when that's focused instead of on files.
+protocol HoverTableFileActions: AnyObject {
+    func copySelectedItems()
+    func cutSelectedItems()
+    func pasteIntoFolder()
+    func renameSelectedItem()
+    func trashSelectedItems()
+    var hasSelection: Bool { get }
+    var canPaste: Bool { get }
+}
+
+final class HoverTableView: NSTableView, NSMenuItemValidation {
+    weak var fileActions: HoverTableFileActions?
+
     /// How long the pointer must rest on a row before the selection moves to it.
     /// ~0.5s matches Windows; tunable.
     var selectionDwell: TimeInterval = 0.5
@@ -105,6 +121,37 @@ final class HoverTableView: NSTableView {
         let columns = IndexSet(integer: nameColumn)
         for row in [previous, newRow] where row >= 0 && row < numberOfRows {
             reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: columns)
+        }
+    }
+
+    // MARK: File-operation commands (responder-chain targets)
+
+    @objc func copy(_ sender: Any?) { fileActions?.copySelectedItems() }
+    @objc func cut(_ sender: Any?) { fileActions?.cutSelectedItems() }
+    @objc func paste(_ sender: Any?) { fileActions?.pasteIntoFolder() }
+    @objc func renameItem(_ sender: Any?) { fileActions?.renameSelectedItem() }
+    @objc func moveToTrash(_ sender: Any?) { fileActions?.trashSelectedItems() }
+
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if (event.keyCode == 36 || event.keyCode == 76), modifiers.isEmpty {
+            fileActions?.renameSelectedItem()        // Return / keypad Enter
+        } else if event.keyCode == 51, modifiers == .command {
+            fileActions?.trashSelectedItems()         // ⌘⌫
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(copy(_:)), #selector(cut(_:)),
+             #selector(renameItem(_:)), #selector(moveToTrash(_:)):
+            return fileActions?.hasSelection ?? false
+        case #selector(paste(_:)):
+            return fileActions?.canPaste ?? false
+        default:
+            return true
         }
     }
 }
