@@ -22,5 +22,11 @@ let package = Package(
             name: "MacSplorerApp",
             dependencies: ["MacSplorerCore"]
         ),
+
+        // Tests for the UI-free core.
+        .testTarget(
+            name: "MacSplorerCoreTests",
+            dependencies: ["MacSplorerCore"]
+        ),
     ]
 )
