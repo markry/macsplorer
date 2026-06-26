@@ -4,7 +4,7 @@ import MacSplorerCore
 /// The main MacSplorer window: a copyable path/address bar on top, a two-pane
 /// split (folder tree | details table), and a status bar below. It coordinates
 /// the two pane controllers and address-bar navigation.
-final class MainWindowController: NSWindowController {
+final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private let addressField = NSTextField()
     private let statusLabel = NSTextField(labelWithString: "")
@@ -15,26 +15,27 @@ final class MainWindowController: NSWindowController {
     private var treeController: FolderTreeController!
     private var detailsController: DetailsTableController!
 
-    /// Toggle hidden (dot) files in both panes, keeping the current location.
-    func toggleShowHiddenFiles() {
-        let value = !Preferences.shared.showHiddenFiles
-        Preferences.shared.showHiddenFiles = value
-        treeController.showHiddenFiles = value
-        detailsController.showHiddenFiles = value
+    /// Invoked when this window closes, so the app can release its controller.
+    var onClose: (() -> Void)?
+
+    /// Re-read persisted preferences into both panes. Called on every open
+    /// window when a preference toggles, so all windows stay in sync.
+    func applyPreferences() {
+        let prefs = Preferences.shared
+        treeController.showHiddenFiles = prefs.showHiddenFiles
+        detailsController.showHiddenFiles = prefs.showHiddenFiles
+        detailsController.singleClickToOpen = prefs.singleClickToOpen
         detailsController.reload()
         treeController.refresh(revealing: detailsController.folder)
-    }
-
-    /// Toggle single-click-to-open (web-style) in the details pane.
-    func toggleSingleClickToOpen() {
-        let value = !Preferences.shared.singleClickToOpen
-        Preferences.shared.singleClickToOpen = value
-        detailsController.singleClickToOpen = value
     }
 
     /// Open the current details selection (File ▸ Open / ⌘O).
     func openSelection() {
         detailsController.openSelected()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose?()
     }
 
     convenience init() {
@@ -46,9 +47,9 @@ final class MainWindowController: NSWindowController {
         )
         window.title = "MacSplorer"
         window.minSize = NSSize(width: 680, height: 380)
-        window.setFrameAutosaveName("MacSplorerMainWindow")
         window.center()
         self.init(window: window)
+        window.delegate = self
         buildLayout()
         wireControllers()
     }
