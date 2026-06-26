@@ -48,6 +48,15 @@ final class FolderTreeController: NSObject {
         if let url { reveal(url) }
     }
 
+    /// Re-read one folder's subtree after a file operation changed its contents
+    /// (new/renamed/deleted/pasted folder), without collapsing the rest of the tree.
+    func refreshSubtree(at url: URL) {
+        guard let root = bestRoot(for: url),
+              let item = itemChain(from: root, to: url).last else { return }
+        item.invalidateChildren()
+        outlineView.reloadItem(item, reloadChildren: true)
+    }
+
     init(outlineView: NSOutlineView) {
         self.outlineView = outlineView
         self.roots = [

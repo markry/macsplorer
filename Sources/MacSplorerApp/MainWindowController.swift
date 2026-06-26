@@ -34,6 +34,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         detailsController.openSelected()
     }
 
+    /// Create a new folder in the current directory (File ▸ New Folder).
+    func makeNewFolder() {
+        detailsController.makeNewFolder()
+    }
+
     func windowWillClose(_ notification: Notification) {
         onClose?()
     }
@@ -97,6 +102,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         detailsController.onOpenFolder = { [weak self] url in self?.navigate(to: url) }
         detailsController.onStatus = { [weak self] status in
             self?.statusLabel.stringValue = status
+        }
+        detailsController.onMutated = { [weak self] folder in
+            self?.treeController.refreshSubtree(at: folder)
         }
 
         addressField.target = self

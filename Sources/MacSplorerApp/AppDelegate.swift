@@ -68,11 +68,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                                        keyEquivalent: "n")
         newWindowItem.target = self
         fileMenu.addItem(newWindowItem)
+        let newFolderItem = NSMenuItem(title: "New Folder",
+                                       action: #selector(newFolder(_:)),
+                                       keyEquivalent: "n")
+        newFolderItem.keyEquivalentModifierMask = [.command, .shift]
+        newFolderItem.target = self
+        fileMenu.addItem(newFolderItem)
         let open = NSMenuItem(title: "Open",
                               action: #selector(openSelection(_:)),
                               keyEquivalent: "o")
         open.target = self
         fileMenu.addItem(open)
+
+        // Edit menu. Cut/Copy/Paste use the standard selectors with no target, so
+        // they route through the responder chain — acting on the address-bar text
+        // when it's focused, or on the focused file list otherwise. Rename and
+        // Move to Trash are MacSplorer commands the list implements.
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editItem.submenu = editMenu
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Rename",
+                         action: #selector(HoverTableView.renameItem(_:)), keyEquivalent: "")
+        let trashItem = NSMenuItem(title: "Move to Trash",
+                                   action: #selector(HoverTableView.moveToTrash(_:)),
+                                   keyEquivalent: "\u{8}")
+        trashItem.keyEquivalentModifierMask = [.command]
+        editMenu.addItem(trashItem)
 
         // View menu (toggles; checkmarks reflect persisted preferences).
         let viewItem = NSMenuItem()
@@ -113,6 +139,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func openSelection(_ sender: Any?) {
         keyController?.openSelection()
+    }
+
+    @objc private func newFolder(_ sender: Any?) {
+        keyController?.makeNewFolder()
     }
 
     @objc private func toggleHiddenFiles(_ sender: Any?) {
