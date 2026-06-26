@@ -35,11 +35,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         action: #selector(NSApplication.terminate(_:)),
                         keyEquivalent: "q")
 
-        // View menu (Show Hidden Files — ⌘⇧. like Finder).
+        // File menu (Open — ⌘O, Finder convention; Return is reserved for rename).
+        let fileItem = NSMenuItem()
+        mainMenu.addItem(fileItem)
+        let fileMenu = NSMenu(title: "File")
+        fileItem.submenu = fileMenu
+        let open = NSMenuItem(title: "Open",
+                              action: #selector(openSelection(_:)),
+                              keyEquivalent: "o")
+        open.target = self
+        fileMenu.addItem(open)
+
+        // View menu (toggles; checkmarks reflect persisted preferences).
         let viewItem = NSMenuItem()
         mainMenu.addItem(viewItem)
         let viewMenu = NSMenu(title: "View")
         viewItem.submenu = viewMenu
+
         let hidden = NSMenuItem(title: "Show Hidden Files",
                                 action: #selector(toggleHiddenFiles(_:)),
                                 keyEquivalent: ".")
@@ -47,16 +59,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hidden.target = self
         viewMenu.addItem(hidden)
 
+        let singleClick = NSMenuItem(title: "Single-Click to Open",
+                                     action: #selector(toggleSingleClick(_:)),
+                                     keyEquivalent: "")
+        singleClick.target = self
+        viewMenu.addItem(singleClick)
+
         return mainMenu
+    }
+
+    @objc private func openSelection(_ sender: NSMenuItem) {
+        mainWindowController?.openSelection()
     }
 
     @objc private func toggleHiddenFiles(_ sender: NSMenuItem) {
         mainWindowController?.toggleShowHiddenFiles()
     }
 
+    @objc private func toggleSingleClick(_ sender: NSMenuItem) {
+        mainWindowController?.toggleSingleClickToOpen()
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(toggleHiddenFiles(_:)) {
-            menuItem.state = (mainWindowController?.showHiddenFiles ?? false) ? .on : .off
+        switch menuItem.action {
+        case #selector(toggleHiddenFiles(_:)):
+            menuItem.state = Preferences.shared.showHiddenFiles ? .on : .off
+        case #selector(toggleSingleClick(_:)):
+            menuItem.state = Preferences.shared.singleClickToOpen ? .on : .off
+        default:
+            break
         }
         return true
     }

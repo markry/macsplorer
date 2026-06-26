@@ -5,7 +5,7 @@ import MacSplorerCore
 /// folder shown as Name / Date Modified / Type / Size, sortable by column, with
 /// file icons. Double-click opens files (default app) or navigates into folders.
 final class DetailsTableController: NSObject {
-    private let tableView: NSTableView
+    private let tableView: HoverTableView
     private(set) var folder: URL?
     private var items: [FSItem] = []
 
@@ -17,12 +17,19 @@ final class DetailsTableController: NSObject {
     /// Whether hidden (dot) files are shown. Set, then call `reload`.
     var showHiddenFiles = false
 
-    init(tableView: NSTableView) {
+    /// When true, a plain single click opens (web-style) and rows underline on
+    /// hover; ⇧/⌘ clicks still just adjust the selection.
+    var singleClickToOpen = false {
+        didSet { tableView.hoverEnabled = singleClickToOpen }
+    }
+
+    init(tableView: HoverTableView) {
         self.tableView = tableView
         super.init()
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
+        tableView.action = #selector(handleSingleClick)
         tableView.doubleAction = #selector(handleDoubleClick)
         configureSorting()
     }
@@ -127,7 +134,29 @@ final class DetailsTableController: NSObject {
     @objc private func handleDoubleClick() {
         let row = tableView.clickedRow
         guard row >= 0, row < items.count else { return }
-        let item = items[row]
+        openItem(items[row])
+    }
+
+    /// Single click: open only in single-click mode, and only for a plain click
+    /// — ⇧/⌘ clicks are selection gestures, so let the table handle those.
+    @objc private func handleSingleClick() {
+        guard singleClickToOpen else { return }
+        let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+        if modifiers.contains(.shift) || modifiers.contains(.command) { return }
+        let row = tableView.clickedRow
+        guard row >= 0, row < items.count else { return }
+        openItem(items[row])
+    }
+
+    /// Open the current selection (⌘O / File ▸ Open): a folder navigates in,
+    /// files launch in their default apps.
+    func openSelected() {
+        let rows = tableView.selectedRowIndexes.filter { $0 < items.count }
+        guard !rows.isEmpty else { return }
+        for row in rows { openItem(items[row]) }
+    }
+
+    private func openItem(_ item: FSItem) {
         if item.isDirectory && !item.isPackage {
             onOpenFolder?(item.url)
         } else {
@@ -161,8 +190,14 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
             ?? makeCell(for: column.identifier)
         switch column.identifier.rawValue {
         case "name":
-            cell.textField?.stringValue = item.name
             cell.imageView?.image = NSWorkspace.shared.icon(forFile: item.url.path)
+            if self.tableView.hoverEnabled && self.tableView.hoveredRow == row {
+                cell.textField?.attributedStringValue = NSAttributedString(
+                    string: item.name,
+                    attributes: [.underlineStyle: NSUnderlineStyle.single.rawValue])
+            } else {
+                cell.textField?.stringValue = item.name
+            }
         case "dateModified":
             cell.textField?.stringValue = FSFormat.date(item.modificationDate)
         case "type":

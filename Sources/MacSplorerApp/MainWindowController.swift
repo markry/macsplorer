@@ -10,20 +10,31 @@ final class MainWindowController: NSWindowController {
     private let statusLabel = NSTextField(labelWithString: "")
     private let splitView = NSSplitView()
     private let outlineView = NSOutlineView()
-    private let tableView = NSTableView()
+    private let tableView = HoverTableView()
 
     private var treeController: FolderTreeController!
     private var detailsController: DetailsTableController!
 
-    private(set) var showHiddenFiles = false
-
     /// Toggle hidden (dot) files in both panes, keeping the current location.
     func toggleShowHiddenFiles() {
-        showHiddenFiles.toggle()
-        treeController.showHiddenFiles = showHiddenFiles
-        detailsController.showHiddenFiles = showHiddenFiles
+        let value = !Preferences.shared.showHiddenFiles
+        Preferences.shared.showHiddenFiles = value
+        treeController.showHiddenFiles = value
+        detailsController.showHiddenFiles = value
         detailsController.reload()
         treeController.refresh(revealing: detailsController.folder)
+    }
+
+    /// Toggle single-click-to-open (web-style) in the details pane.
+    func toggleSingleClickToOpen() {
+        let value = !Preferences.shared.singleClickToOpen
+        Preferences.shared.singleClickToOpen = value
+        detailsController.singleClickToOpen = value
+    }
+
+    /// Open the current details selection (File ▸ Open / ⌘O).
+    func openSelection() {
+        detailsController.openSelected()
     }
 
     convenience init() {
@@ -89,6 +100,12 @@ final class MainWindowController: NSWindowController {
 
         addressField.target = self
         addressField.action = #selector(addressEntered)
+
+        // Apply persisted preferences before the first load.
+        let prefs = Preferences.shared
+        treeController.showHiddenFiles = prefs.showHiddenFiles
+        detailsController.showHiddenFiles = prefs.showHiddenFiles
+        detailsController.singleClickToOpen = prefs.singleClickToOpen
 
         // Selecting Home fires onSelect → navigate, populating the details pane.
         treeController.selectHome()
