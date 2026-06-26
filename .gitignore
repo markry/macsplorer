@@ -1,0 +1,15 @@
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Assembled app bundle / release artifacts
+build/
+dist/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+*.swp
