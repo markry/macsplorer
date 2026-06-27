@@ -67,6 +67,17 @@ final class FolderTreeController: NSObject {
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.reloadData()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(folderDidChange(_:)),
+            name: FolderChange.didChange, object: nil)
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func folderDidChange(_ note: Notification) {
+        for folder in FolderChange.folders(from: note) {
+            refreshSubtree(at: folder)
+        }
     }
 
     /// Expand + select the Home root (row 0). Done after the coordinator wires
