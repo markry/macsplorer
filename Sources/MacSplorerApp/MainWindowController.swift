@@ -6,7 +6,8 @@ import MacSplorerCore
 /// the two pane controllers and address-bar navigation.
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
 
-    private let addressField = NSTextField()
+    private let addressField = AddressTextField()
+    private var addressFieldEditor: AddressFieldEditor?
     private let statusLabel = NSTextField(labelWithString: "")
     private let splitView = NSSplitView()
     private let outlineView = FolderOutlineView()
@@ -42,6 +43,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
 
     func windowWillClose(_ notification: Notification) {
         onClose?()
+    }
+
+    /// Vend a custom field editor for the address field so we can navigate when a
+    /// completion is committed with Return (not just fill the field).
+    func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? {
+        guard (client as AnyObject?) === addressField else { return nil }
+        if addressFieldEditor == nil {
+            let editor = AddressFieldEditor()
+            editor.isFieldEditor = true
+            editor.onCommit = { [weak self] movement in
+                guard movement == NSTextMovement.return.rawValue else { return }
+                // Defer so the completion machinery finishes inserting first.
+                DispatchQueue.main.async { self?.addressEntered() }
+            }
+            addressFieldEditor = editor
+        }
+        return addressFieldEditor
     }
 
     private var initialFolder: URL?
@@ -158,6 +176,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
     private var isCompleting = false
     private var suppressCompletion = false
 
+    /// When the typed segment has exactly one match, we skip the popover and
+    /// stash the full completed path here so Tab (fill) / Enter (fill + open)
+    /// can act on it directly — no need to arrow down to a one-item list.
+    private var singleMatchPath: String?
+
     func controlTextDidChange(_ obj: Notification) {
         guard (obj.object as? NSTextField) === addressField else { return }
         updateTerminalButton()
@@ -168,15 +191,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
         isCompleting = false
     }
 
-    /// Don't pop the completion list while backspacing — only while typing
-    /// forward (matches the address bar feel; deleting shouldn't fight you).
     func control(_ control: NSControl, textView: NSTextView,
                  doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(NSResponder.deleteBackward(_:))
-            || commandSelector == #selector(NSResponder.deleteForward(_:)) {
+        switch commandSelector {
+        case #selector(NSResponder.deleteBackward(_:)), #selector(NSResponder.deleteForward(_:)):
+            // Don't pop the completion list while backspacing — deleting
+            // shouldn't fight you.
             suppressCompletion = true
+            singleMatchPath = nil
+            return false
+        case #selector(NSResponder.insertTab(_:)):
+            // One match: fill it in and keep typing (no view change).
+            guard let path = singleMatchPath else { return false }
+            setAddress(path, cursorAtEnd: true)
+            singleMatchPath = nil
+            return true
+        case #selector(NSResponder.insertNewline(_:)):
+            // One match: fill it in and open it (view change).
+            guard let path = singleMatchPath else { return false }
+            setAddress(path, cursorAtEnd: true)
+            singleMatchPath = nil
+            addressEntered()
+            return true
+        default:
+            return false
         }
-        return false
     }
 
     /// Type-ahead: complete the path segment under the cursor against the real
@@ -188,6 +227,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
                  completions words: [String], forPartialWordRange charRange: NSRange,
                  indexOfSelectedItem index: UnsafeMutablePointer<Int>) -> [String] {
         index.pointee = -1 // don't inline-fill; just show the list
+        singleMatchPath = nil
         let text = textView.string as NSString
         let end = charRange.location + charRange.length
         let head = text.substring(to: end) as NSString
@@ -199,7 +239,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
         // just after typing a "/"); skip completion that instant rather than
         // dropping a negative number of chars below.
         guard charRange.location >= dirStart, end >= dirStart else { return [] }
-        let dirPath = (text.substring(to: dirStart) as NSString).expandingTildeInPath
+        let typedDir = text.substring(to: dirStart)        // as typed (may hold "~")
+        let dirPath = (typedDir as NSString).expandingTildeInPath
         let partial = text.substring(with: NSRange(location: dirStart, length: end - dirStart))
         let leadingLen = charRange.location - dirStart
 
@@ -210,7 +251,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
         }
         let showHidden = Preferences.shared.showHiddenFiles
         let lowerPartial = partial.lowercased()
-        return entries
+        // Each match's "display" is the full entry name, folders suffixed "/".
+        let displays = entries
             .filter { name in
                 (showHidden || !name.hasPrefix(".")) && name.lowercased().hasPrefix(lowerPartial)
             }
@@ -219,10 +261,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
                 var entryIsDir: ObjCBool = false
                 let full = (dirPath as NSString).appendingPathComponent(name)
                 FileManager.default.fileExists(atPath: full, isDirectory: &entryIsDir)
-                let display = entryIsDir.boolValue ? name + "/" : name
-                // Replace only `charRange`; keep the already-typed leading chars.
-                return String(display.dropFirst(min(leadingLen, display.count)))
+                return entryIsDir.boolValue ? name + "/" : name
             }
+
+        // Exactly one match: skip the popover; Tab/Enter act on it directly.
+        if displays.count == 1 {
+            singleMatchPath = typedDir + displays[0]
+            return []
+        }
+        // Otherwise show the list. Each item replaces only `charRange`, so keep
+        // the already-typed leading chars of the segment.
+        return displays.map { String($0.dropFirst(min(leadingLen, $0.count))) }
     }
 
     private func wireControllers() {
