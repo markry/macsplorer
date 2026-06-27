@@ -35,10 +35,11 @@ expect:
 The one part that goes beyond what Explorer or Finder offer — and is worth
 learning — is the address bar, described next.
 
-## The Path Text Control (PTC)
+## The Filesystem Address Bar (FAB)
 
-The full-path bar across the top is the **Path Text Control**. Beyond showing
-and copying the current location, it's built for fast keyboard navigation:
+The full-path bar across the top is the **Filesystem Address Bar**. Beyond
+showing and copying the current location, it's built for fast keyboard
+navigation:
 
 - **Type a path and press Enter.** A folder path navigates there; a file path
   **opens** the file (it doesn't rename it — Finder's address-style behavior).
@@ -49,11 +50,11 @@ and copying the current location, it's built for fast keyboard navigation:
   (`~/Desktop`), component by component, while preserving friendly symlink names
   (e.g. `~/OneDrive`).
 
-- **Append-and-keep-typing.** After you Enter into a folder, the PTC appends a
+- **Append-and-keep-typing.** After you Enter into a folder, the FAB appends a
   trailing `/` and leaves the cursor at the end — so you can immediately type
   the next segment and keep descending without reaching for the mouse.
 
-- **Type-ahead completion.** As you type a segment, the PTC matches it against
+- **Type-ahead completion.** As you type a segment, the FAB matches it against
   the real directory contents (folders suffixed with `/` so you can keep
   traversing):
   - **Multiple matches** → a list appears. Arrow down to a choice; **Enter**
@@ -64,11 +65,15 @@ and copying the current location, it's built for fast keyboard navigation:
   - **While deleting** (backspacing), the match list still updates so you keep
     your bearings — it just doesn't inline-fill, so it won't fight you.
 
+  *These same-window Tab-completion behaviors are fully functional today; a
+  future version will prettify their presentation (for example, gray inline
+  suggestion text in place of the current selection highlight).*
+
 - **Tab into the field** puts the cursor at the end (ready to extend the path)
   rather than selecting everything; clicking still places the cursor where you
   click.
 
-- **Open in Terminal.** The button at the right of the PTC (or `⌥⌘T`) opens a
+- **Open in Terminal.** The button at the right of the FAB (or `⌥⌘T`) opens a
   Terminal window at the path currently in the field.
 
 ## Building
@@ -88,7 +93,7 @@ open build/MacSplorer.app # run
 - **`MacSplorerCore`** — pure model layer (filesystem items, directory loading,
   sorting, formatting). No UI; testable in isolation.
 - **`MacSplorerApp`** — AppKit UI (programmatic, no Storyboards): the window,
-  the `NSOutlineView` folder tree, the `NSTableView` details list, and the PTC
+  the `NSOutlineView` folder tree, the `NSTableView` details list, and the FAB
   and status bars.
 
 ## License
