@@ -79,6 +79,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                               keyEquivalent: "o")
         open.target = self
         fileMenu.addItem(open)
+        let terminal = NSMenuItem(title: "Open in Terminal",
+                                  action: #selector(openTerminal(_:)),
+                                  keyEquivalent: "t")
+        terminal.keyEquivalentModifierMask = [.command, .option]
+        terminal.target = self
+        fileMenu.addItem(terminal)
 
         // Edit menu. Cut/Copy/Paste use the standard selectors with no target, so
         // they route through the responder chain — acting on the address-bar text
@@ -151,6 +157,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         keyController?.makeNewFolder()
     }
 
+    @objc private func openTerminal(_ sender: Any?) {
+        keyController?.openInTerminal()
+    }
+
     @objc private func toggleHiddenFiles(_ sender: Any?) {
         Preferences.shared.showHiddenFiles.toggle()
         windowControllers.forEach { $0.applyPreferences() }
@@ -173,6 +183,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             menuItem.state = Preferences.shared.singleClickToOpen ? .on : .off
         case #selector(togglePromptOnCollision(_:)):
             menuItem.state = Preferences.shared.promptOnCollision ? .on : .off
+        case #selector(openTerminal(_:)):
+            return keyController?.canOpenInTerminal ?? false
         default:
             break
         }

@@ -130,7 +130,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
         }
     }
 
-    @objc private func openInTerminal() {
+    @objc func openInTerminal() {
         let path = (addressField.stringValue as NSString).expandingTildeInPath
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
@@ -140,6 +140,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
         process.arguments = ["-a", "Terminal", path]
         try? process.run()
     }
+
+    /// Whether the address field currently holds a real folder (drives the
+    /// Terminal button + menu item enablement).
+    var canOpenInTerminal: Bool { terminalButton.isEnabled }
 
     /// Enable the Terminal button only when the field holds a real folder path.
     private func updateTerminalButton() {
