@@ -648,10 +648,7 @@ extension DetailsTableController {
 
     func openSelectionInTerminal() {
         guard let target = singleSelectedFolderURL() ?? folder else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-a", "Terminal", target.path]
-        try? process.run()
+        Shell.openInTerminal(target)
     }
 
     private func selectedItemURLs() -> [URL] {
