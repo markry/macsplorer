@@ -119,6 +119,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         singleClick.target = self
         viewMenu.addItem(singleClick)
 
+        let collision = NSMenuItem(title: "Prompt on Name Collision",
+                                   action: #selector(togglePromptOnCollision(_:)),
+                                   keyEquivalent: "")
+        collision.target = self
+        viewMenu.addItem(collision)
+
         // Window menu — once it's the app's designated windowsMenu, macOS
         // auto-populates it with the open-window list and the tabbing items
         // (Show Tab Bar, Merge All Windows, …) when multiple windows are open.
@@ -155,12 +161,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         windowControllers.forEach { $0.applyPreferences() }
     }
 
+    @objc private func togglePromptOnCollision(_ sender: Any?) {
+        Preferences.shared.promptOnCollision.toggle()
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(toggleHiddenFiles(_:)):
             menuItem.state = Preferences.shared.showHiddenFiles ? .on : .off
         case #selector(toggleSingleClick(_:)):
             menuItem.state = Preferences.shared.singleClickToOpen ? .on : .off
+        case #selector(togglePromptOnCollision(_:)):
+            menuItem.state = Preferences.shared.promptOnCollision ? .on : .off
         default:
             break
         }

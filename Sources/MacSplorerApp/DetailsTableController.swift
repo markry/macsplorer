@@ -293,20 +293,8 @@ extension DetailsTableController: HoverTableFileActions {
         guard let folder else { return }
         let (urls, move) = Clipboard.shared.pasteSource()
         guard !urls.isEmpty else { return }
-        var pasted: [String] = []
-        var affected: Set<URL> = [folder]
-        for url in urls {
-            do {
-                let dest = move ? try FileOperations.move(url, into: folder)
-                                : try FileOperations.copy(url, into: folder)
-                pasted.append(dest.lastPathComponent)
-                if move { affected.insert(url.deletingLastPathComponent()) }
-            } catch {
-                NSSound.beep()
-            }
-        }
+        performTransfer(urls, into: folder, move: move, selectLanded: true)
         if move { Clipboard.shared.clearAfterMove() }
-        finishMutation(affected: affected, selecting: pasted)
     }
 
     func trashSelectedItems() {
@@ -441,20 +429,11 @@ extension DetailsTableController {
         guard !urls.isEmpty else { return false }
 
         let move = dragOperation(for: info) == .move
-        var landed: [String] = []
-        var affected: Set<URL> = [destination]
-        for url in urls where !isSelfOrDescendant(url, of: destination) {
-            do {
-                let dest = move ? try FileOperations.move(url, into: destination)
-                                : try FileOperations.copy(url, into: destination)
-                landed.append(dest.lastPathComponent)
-                if move { affected.insert(url.deletingLastPathComponent()) }
-            } catch {
-                NSSound.beep()
-            }
+        let selectLanded = samePath(destination, folder)
+        // Defer so any collision prompt doesn't run inside the drop handler.
+        DispatchQueue.main.async { [weak self] in
+            self?.performTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
         }
-        finishMutation(affected: affected,
-                       selecting: samePath(destination, folder) ? landed : [])
         return true
     }
 
@@ -483,6 +462,87 @@ extension DetailsTableController {
 
     private func samePath(_ a: URL?, _ b: URL?) -> Bool {
         a?.standardizedFileURL.path == b?.standardizedFileURL.path
+    }
+}
+
+// MARK: - Transfer with collision handling
+
+private extension DetailsTableController {
+    enum CollisionChoice { case keepBoth, replace, stop }
+
+    /// Copy or move `urls` into `destination`, resolving name collisions per the
+    /// user's preference (silent keep-both, or a Finder-style prompt), then refresh.
+    func performTransfer(_ urls: [URL], into destination: URL, move: Bool, selectLanded: Bool) {
+        var landed: [String] = []
+        var affected: Set<URL> = [destination]
+        var applyToAll: CollisionChoice?
+        let ask = Preferences.shared.promptOnCollision
+
+        for url in urls {
+            if isSelfOrDescendant(url, of: destination) { continue }
+            let target = destination.appendingPathComponent(url.lastPathComponent)
+            let sameParent = samePath(url.deletingLastPathComponent(), destination)
+            let collides = !sameParent && FileManager.default.fileExists(atPath: target.path)
+
+            var choice: CollisionChoice = .keepBoth
+            if collides {
+                if !ask {
+                    choice = .keepBoth
+                } else if let all = applyToAll {
+                    choice = all
+                } else {
+                    let result = askCollision(name: url.lastPathComponent, in: destination,
+                                              multiple: urls.count > 1)
+                    if result.applyToAll { applyToAll = result.choice }
+                    choice = result.choice
+                }
+            }
+            if choice == .stop { break }
+
+            do {
+                switch choice {
+                case .keepBoth:
+                    let dest = move ? try FileOperations.move(url, into: destination)
+                                    : try FileOperations.copy(url, into: destination)
+                    landed.append(dest.lastPathComponent)
+                case .replace:
+                    _ = try? FileOperations.moveToTrash(target) // existing → Trash (recoverable)
+                    let dest = move ? try FileOperations.move(url, to: target)
+                                    : try FileOperations.copy(url, to: target)
+                    landed.append(dest.lastPathComponent)
+                case .stop:
+                    break
+                }
+                if move { affected.insert(url.deletingLastPathComponent()) }
+            } catch {
+                NSSound.beep()
+            }
+        }
+        finishMutation(affected: affected, selecting: selectLanded ? landed : [])
+    }
+
+    func askCollision(name: String, in destination: URL,
+                      multiple: Bool) -> (choice: CollisionChoice, applyToAll: Bool) {
+        let alert = NSAlert()
+        alert.messageText = "An item named “\(name)” already exists in “\(destination.lastPathComponent)”."
+        alert.informativeText = "Keep both items, replace the existing one, or stop?"
+        alert.addButton(withTitle: "Keep Both")
+        alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Stop")
+        var checkbox: NSButton?
+        if multiple {
+            let box = NSButton(checkboxWithTitle: "Apply to All", target: nil, action: nil)
+            box.sizeToFit()
+            alert.accessoryView = box
+            checkbox = box
+        }
+        let response = alert.runModal()
+        let applyToAll = checkbox?.state == .on
+        switch response {
+        case .alertFirstButtonReturn: return (.keepBoth, applyToAll)
+        case .alertSecondButtonReturn: return (.replace, applyToAll)
+        default: return (.stop, applyToAll)
+        }
     }
 }
 
