@@ -46,7 +46,8 @@ if [ -z "$IDENTITY" ]; then
 fi
 if [ -n "$IDENTITY" ]; then
     echo "==> signing with: $IDENTITY"
-    codesign --force --sign "$IDENTITY" "$APP"
+    # Hardened runtime + secure timestamp so the build is notarization-ready.
+    codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
 else
     echo "==> ad-hoc signing for local run (no Developer ID cert found)"
     codesign --force --sign - "$APP"
