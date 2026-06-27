@@ -52,5 +52,16 @@ else
     codesign --force --sign - "$APP"
 fi
 
+# Install to /Applications so it's easy to find/launch and lives at a stable
+# path for Full Disk Access (with the Developer ID identity, that grant persists
+# across rebuilds). The build/ copy remains as the artifact for releases.
+echo "==> installing to /Applications"
+pkill -f "MacSplorer.app/Contents/MacOS/MacSplorer" 2>/dev/null || true
+sleep 0.5
+rm -rf "/Applications/MacSplorer.app"
+ditto "$APP" "/Applications/MacSplorer.app"
+
 echo "==> done."
-echo "    Launch with:  open \"$APP\""
+echo "    Installed:  /Applications/MacSplorer.app"
+echo "    Build copy: $APP"
+echo "    Launch:     open -a MacSplorer"
