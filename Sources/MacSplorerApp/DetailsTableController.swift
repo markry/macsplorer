@@ -17,6 +17,10 @@ final class DetailsTableController: NSObject {
     private var renamingRow = -1
     private let watcher = DirectoryWatcher()
 
+    /// Packages whose aggregate-size computation is in flight, to avoid
+    /// scheduling the same walk twice.
+    private var pendingSizeChecks = Set<ObjectIdentifier>()
+
     /// Whether hidden (dot) files are shown. Set, then call `reload`.
     var showHiddenFiles = false
 
@@ -117,7 +121,7 @@ final class DetailsTableController: NSObject {
     private static func order(_ a: FSItem, _ b: FSItem, key: String) -> ComparisonResult {
         switch key {
         case "dateModified": return compareOptional(a.modificationDate, b.modificationDate)
-        case "size":         return compareOptional(a.byteSize, b.byteSize)
+        case "size":         return compareOptional(a.displayByteSize, b.displayByteSize)
         case "type":         return (a.typeDescription ?? "")
                                     .localizedStandardCompare(b.typeDescription ?? "")
         default:             return a.name.localizedStandardCompare(b.name)
@@ -217,11 +221,35 @@ final class DetailsTableController: NSObject {
             onStatus?("\(count) item\(count == 1 ? "" : "s")")
         } else if selection.count == 1, let row = selection.first {
             let item = items[row]
-            let size = item.isDirectory ? "" : " · \(FSFormat.size(item.byteSize))"
+            // Plain folders show no size; files and packages do.
+            let showSize = !item.isDirectory || item.isPackage
+            let size = showSize ? " · \(FSFormat.size(item.displayByteSize))" : ""
             onStatus?("\(count) items · 1 selected\(size)")
         } else {
-            let total = selection.reduce(0) { $0 + (items[$1].byteSize ?? 0) }
+            let total = selection.reduce(0) { $0 + (items[$1].displayByteSize ?? 0) }
             onStatus?("\(count) items · \(selection.count) selected · \(FSFormat.size(total))")
+        }
+    }
+
+    /// Compute a package's aggregate size off the main thread, then fill in just
+    /// that row's size cell. Mirrors the tree's background subfolder probe.
+    private func scheduleSizeCheck(for item: FSItem) {
+        let key = ObjectIdentifier(item)
+        guard !pendingSizeChecks.contains(key) else { return }
+        pendingSizeChecks.insert(key)
+        let url = item.url
+        DispatchQueue.global(qos: .utility).async {
+            let size = FSItem.directoryTotalSize(at: url)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.pendingSizeChecks.remove(key)
+                item.setPackageSize(size)
+                guard let row = self.items.firstIndex(where: { $0 === item }) else { return }
+                let col = self.tableView.column(withIdentifier: NSUserInterfaceItemIdentifier("size"))
+                guard col >= 0 else { return }
+                self.tableView.reloadData(forRowIndexes: IndexSet(integer: row),
+                                          columnIndexes: IndexSet(integer: col))
+            }
         }
     }
 }
@@ -258,7 +286,12 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
         case "type":
             cell.textField?.stringValue = item.typeDescription ?? (item.isDirectory ? "Folder" : "")
         case "size":
-            cell.textField?.stringValue = FSFormat.size(item.byteSize)
+            if item.needsPackageSize {
+                cell.textField?.stringValue = ""   // fill in once computed
+                scheduleSizeCheck(for: item)
+            } else {
+                cell.textField?.stringValue = FSFormat.size(item.displayByteSize)
+            }
         default:
             cell.textField?.stringValue = ""
         }

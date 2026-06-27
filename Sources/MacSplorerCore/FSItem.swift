@@ -32,6 +32,21 @@ public final class FSItem {
     private var cachedHasSubfolders: Bool?
     private var cachedHasSubfoldersIncludeHidden = false
 
+    /// Aggregate size of a package/bundle (.app, .pvm, …), computed lazily in the
+    /// background since it requires walking the bundle. nil until computed.
+    private var cachedPackageSize: Int?
+
+    /// The size to display and sort by: a plain file's size, or — once computed —
+    /// a package's aggregate. Plain folders stay nil (shown blank, like Explorer).
+    public var displayByteSize: Int? { byteSize ?? cachedPackageSize }
+
+    /// Whether this entry should show a size that needs background computation
+    /// (a package whose aggregate isn't known yet).
+    public var needsPackageSize: Bool { byteSize == nil && isPackage && cachedPackageSize == nil }
+
+    public func knownPackageSize() -> Int? { cachedPackageSize }
+    public func setPackageSize(_ value: Int) { cachedPackageSize = value }
+
     public init(url: URL) {
         self.url = url
         let values = try? url.resourceValues(forKeys: Set(FSItem.resourceKeys))
@@ -147,5 +162,24 @@ public final class FSItem {
             if isDir && !isPkg { return true }
         }
         return false
+    }
+
+    /// Total logical size of everything inside `url` — for packages/bundles shown
+    /// as a single item. Pure and side-effect-free, so safe on a background queue.
+    public static func directoryTotalSize(at url: URL) -> Int {
+        let keys: Set<URLResourceKey> = [.fileSizeKey, .totalFileAllocatedSizeKey]
+        let enumerationURL = url.resolvingSymlinksInPath()
+        guard let enumerator = FileManager.default.enumerator(
+            at: enumerationURL,
+            includingPropertiesForKeys: Array(keys),
+            options: [],
+            errorHandler: nil
+        ) else { return 0 }
+        var total = 0
+        for case let child as URL in enumerator {
+            let values = try? child.resourceValues(forKeys: keys)
+            total += values?.fileSize ?? values?.totalFileAllocatedSize ?? 0
+        }
+        return total
     }
 }
