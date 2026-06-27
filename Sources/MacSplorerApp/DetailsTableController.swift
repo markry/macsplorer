@@ -314,12 +314,16 @@ extension DetailsTableController: HoverTableFileActions {
         beginRename(row: tableView.selectedRow)
     }
 
-    /// Create a new folder in the current directory, then start renaming it.
-    func makeNewFolder() {
-        guard let folder else { return }
+    /// Create a new folder in `directory` (the current folder if nil). When it
+    /// lands in the visible folder, select it and start renaming.
+    func makeNewFolder(in directory: URL? = nil) {
+        guard let target = directory ?? folder else { return }
         do {
-            let url = try FileOperations.newFolder(in: folder)
-            finishMutation(affected: [folder], selecting: [url.lastPathComponent], renameFirst: true)
+            let url = try FileOperations.newFolder(in: target)
+            let inCurrent = samePath(target, folder)
+            finishMutation(affected: [target],
+                           selecting: inCurrent ? [url.lastPathComponent] : [],
+                           renameFirst: inCurrent)
         } catch {
             NSSound.beep()
         }
@@ -547,6 +551,112 @@ private extension DetailsTableController {
         case .alertSecondButtonReturn: return (.replace, applyToAll)
         default: return (.stop, applyToAll)
         }
+    }
+}
+
+// MARK: - Context menu + extra commands
+
+extension DetailsTableController {
+    func contextMenu(forClickedRow row: Int) -> NSMenu? {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        if row < 0 || row >= items.count {
+            // Empty space → act on the current folder.
+            add(menu, "New Folder", #selector(ctxNewFolderHere(_:)))
+            add(menu, "Paste", #selector(ctxPaste(_:)), enabled: Clipboard.shared.canPaste)
+            menu.addItem(.separator())
+            add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
+            add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
+            add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
+            return menu
+        }
+        let item = items[row]
+        let isFolder = item.isDirectory && !item.isPackage
+        add(menu, "Open", #selector(ctxOpen(_:)))
+        if isFolder {
+            add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
+            add(menu, "New Folder", #selector(ctxNewFolderInClicked(_:)))
+        }
+        menu.addItem(.separator())
+        add(menu, "Cut", #selector(ctxCut(_:)))
+        add(menu, "Copy", #selector(ctxCopy(_:)))
+        add(menu, "Duplicate", #selector(ctxDuplicate(_:)))
+        menu.addItem(.separator())
+        add(menu, "Rename", #selector(ctxRename(_:)))
+        add(menu, "Move to Trash", #selector(ctxTrash(_:)))
+        menu.addItem(.separator())
+        add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
+        add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
+        return menu
+    }
+
+    private func add(_ menu: NSMenu, _ title: String, _ action: Selector, enabled: Bool = true) {
+        let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        menuItem.target = self
+        menuItem.isEnabled = enabled
+        menu.addItem(menuItem)
+    }
+
+    @objc private func ctxOpen(_ sender: Any?) { openSelected() }
+    @objc private func ctxCut(_ sender: Any?) { cutSelectedItems() }
+    @objc private func ctxCopy(_ sender: Any?) { copySelectedItems() }
+    @objc private func ctxPaste(_ sender: Any?) { pasteIntoFolder() }
+    @objc private func ctxDuplicate(_ sender: Any?) { duplicateSelectedItems() }
+    @objc private func ctxRename(_ sender: Any?) { renameSelectedItem() }
+    @objc private func ctxTrash(_ sender: Any?) { trashSelectedItems() }
+    @objc private func ctxReveal(_ sender: Any?) { revealSelection() }
+    @objc private func ctxCopyPath(_ sender: Any?) { copySelectionPaths() }
+    @objc private func ctxTerminal(_ sender: Any?) { openSelectionInTerminal() }
+    @objc private func ctxNewFolderHere(_ sender: Any?) { makeNewFolder() }
+    @objc private func ctxNewFolderInClicked(_ sender: Any?) {
+        if let url = singleSelectedFolderURL() { makeNewFolder(in: url) }
+    }
+
+    func duplicateSelectedItems() {
+        let urls = selectedItemURLs()
+        guard !urls.isEmpty, let folder else { return }
+        var names: [String] = []
+        for url in urls {
+            do { names.append(try FileOperations.copy(url, into: folder).lastPathComponent) }
+            catch { NSSound.beep() }
+        }
+        finishMutation(affected: [folder], selecting: names)
+    }
+
+    func revealSelection() {
+        let urls = selectedItemURLs()
+        if urls.isEmpty {
+            if let folder { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting(urls)
+        }
+    }
+
+    func copySelectionPaths() {
+        let urls = selectedItemURLs()
+        let paths = urls.isEmpty ? (folder.map { [$0.path] } ?? []) : urls.map(\.path)
+        guard !paths.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
+    }
+
+    func openSelectionInTerminal() {
+        guard let target = singleSelectedFolderURL() ?? folder else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", "Terminal", target.path]
+        try? process.run()
+    }
+
+    private func selectedItemURLs() -> [URL] {
+        tableView.selectedRowIndexes.filter { $0 < items.count }.map { items[$0].url }
+    }
+
+    private func singleSelectedFolderURL() -> URL? {
+        let rows = tableView.selectedRowIndexes
+        guard rows.count == 1, let row = rows.first, row < items.count else { return nil }
+        let item = items[row]
+        return (item.isDirectory && !item.isPackage) ? item.url : nil
     }
 }
 

@@ -26,6 +26,8 @@ protocol HoverTableFileActions: AnyObject {
     func trashSelectedItems()
     var hasSelection: Bool { get }
     var canPaste: Bool { get }
+    /// Build the right-click menu for the clicked row (or -1 for empty space).
+    func contextMenu(forClickedRow row: Int) -> NSMenu?
 }
 
 final class HoverTableView: NSTableView, NSMenuItemValidation {
@@ -153,5 +155,19 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
         default:
             return true
         }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let clicked = row(at: convert(event.locationInWindow, from: nil))
+        // Right-clicking an unselected row selects just it; right-clicking empty
+        // space clears the selection (so commands act on the current folder).
+        if clicked >= 0 {
+            if !selectedRowIndexes.contains(clicked) {
+                selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false)
+            }
+        } else {
+            deselectAll(nil)
+        }
+        return fileActions?.contextMenu(forClickedRow: clicked)
     }
 }
