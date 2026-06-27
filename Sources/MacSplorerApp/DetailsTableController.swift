@@ -280,6 +280,7 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
 extension DetailsTableController: HoverTableFileActions {
     var hasSelection: Bool { !tableView.selectedRowIndexes.isEmpty }
     var canPaste: Bool { Clipboard.shared.canPaste }
+    var selectedFileURLs: [URL] { selectedItemURLs() }
 
     func copySelectedItems() {
         let urls = selectedURLs()
@@ -577,6 +578,11 @@ extension DetailsTableController {
             add(menu, "Open in New Window", #selector(ctxOpenInNewWindow(_:)))
             add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
             add(menu, "New Folder", #selector(ctxNewFolderInClicked(_:)))
+        } else {
+            let openWith = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
+            openWith.submenu = OpenWith.submenu(for: item.url, target: self,
+                                                action: #selector(ctxOpenWithApp(_:)))
+            menu.addItem(openWith)
         }
         menu.addItem(.separator())
         add(menu, "Cut", #selector(ctxCut(_:)))
@@ -615,6 +621,14 @@ extension DetailsTableController {
     @objc private func ctxOpenInNewWindow(_ sender: Any?) {
         if let url = singleSelectedFolderURL() {
             (NSApp.delegate as? AppDelegate)?.openWindow(showing: url)
+        }
+    }
+    @objc private func ctxOpenWithApp(_ sender: NSMenuItem) {
+        let urls = selectedItemURLs()
+        if let appURL = sender.representedObject as? URL {
+            OpenWith.open(urls, with: appURL)
+        } else {
+            OpenWith.openWithOtherApp(urls) // "Other…"
         }
     }
 

@@ -1,4 +1,5 @@
 import AppKit
+import Quartz
 
 /// An `NSTableView` that implements Windows-style "point to select" when
 /// `hoverEnabled` is on (single-click-to-open mode).
@@ -27,6 +28,8 @@ protocol HoverTableFileActions: AnyObject {
     func duplicateSelectedItems()
     var hasSelection: Bool { get }
     var canPaste: Bool { get }
+    /// URLs of the currently selected rows (for Quick Look).
+    var selectedFileURLs: [URL] { get }
     /// Build the right-click menu for the clicked row (or -1 for empty space).
     func contextMenu(forClickedRow row: Int) -> NSMenu?
 }
@@ -142,9 +145,39 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
             fileActions?.renameSelectedItem()        // Return / keypad Enter
         } else if event.keyCode == 51, modifiers == .command {
             fileActions?.trashSelectedItems()         // ⌘⌫
+        } else if event.keyCode == 49, modifiers.isEmpty {
+            toggleQuickLook()                         // Space
         } else {
             super.keyDown(with: event)
+            // Keep an open Quick Look panel in sync with arrow-key navigation.
+            if let panel = QLPreviewPanel.shared(), panel.isVisible,
+               panel.dataSource === self {
+                panel.reloadData()
+            }
         }
+    }
+
+    // MARK: Quick Look (spacebar)
+
+    private func toggleQuickLook() {
+        guard let panel = QLPreviewPanel.shared() else { return }
+        if QLPreviewPanel.sharedPreviewPanelExists() && panel.isVisible {
+            panel.orderOut(nil)
+        } else {
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = self
+        panel.delegate = self
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        if panel.dataSource === self { panel.dataSource = nil }
+        if panel.delegate === self { panel.delegate = nil }
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -171,5 +204,27 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
             deselectAll(nil)
         }
         return fileActions?.contextMenu(forClickedRow: clicked)
+    }
+}
+
+extension HoverTableView: QLPreviewPanelDataSource, QLPreviewPanelDelegate {
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        fileActions?.selectedFileURLs.count ?? 0
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        let urls = fileActions?.selectedFileURLs ?? []
+        guard index >= 0 && index < urls.count else { return nil }
+        return urls[index] as NSURL
+    }
+
+    /// Let the panel's arrow keys / Esc fall back to the table so navigation and
+    /// dismissing both feel native.
+    func previewPanel(_ panel: QLPreviewPanel!, handle event: NSEvent!) -> Bool {
+        if event.type == .keyDown {
+            keyDown(with: event)
+            return true
+        }
+        return false
     }
 }
