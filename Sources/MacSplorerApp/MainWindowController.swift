@@ -45,6 +45,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
         onClose?()
     }
 
+    /// Drives the tab bar's "+" button: add a new tab to this window.
+    override func newWindowForTab(_ sender: Any?) {
+        (NSApp.delegate as? AppDelegate)?.openWindow(tabbedInto: window)
+    }
+
     /// Vend a custom field editor for the address field so we can navigate when a
     /// completion is committed with Return (not just fill the field).
     func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? {
