@@ -7,7 +7,6 @@ import Foundation
 final class DirectoryWatcher {
     var onChange: (() -> Void)?
 
-    private var fileDescriptor: Int32 = -1
     private var source: DispatchSourceFileSystemObject?
     private var coalescing = false
 
@@ -16,17 +15,15 @@ final class DirectoryWatcher {
         stop()
         let descriptor = open(url.path, O_EVTONLY)
         guard descriptor >= 0 else { return }
-        fileDescriptor = descriptor
 
         let newSource = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
             eventMask: [.write, .delete, .rename, .extend, .link, .revoke],
             queue: .main)
         newSource.setEventHandler { [weak self] in self?.scheduleChange() }
-        newSource.setCancelHandler { [weak self] in
-            if let fd = self?.fileDescriptor, fd >= 0 { close(fd) }
-            self?.fileDescriptor = -1
-        }
+        // Capture THIS descriptor: cancel handlers run asynchronously, so a later
+        // watch() must not let an older source close the newer fd.
+        newSource.setCancelHandler { close(descriptor) }
         source = newSource
         newSource.resume()
     }
