@@ -15,6 +15,7 @@ final class DetailsTableController: NSObject {
     var onStatus: ((String) -> Void)?
 
     private var renamingRow = -1
+    private let watcher = DirectoryWatcher()
 
     /// Whether hidden (dot) files are shown. Set, then call `reload`.
     var showHiddenFiles = false
@@ -41,6 +42,8 @@ final class DetailsTableController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(folderDidChange(_:)),
             name: FolderChange.didChange, object: nil)
+        // Live-refresh on external changes (Finder deletes, finished downloads…).
+        watcher.onChange = { [weak self] in self?.reload() }
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -57,6 +60,7 @@ final class DetailsTableController: NSObject {
 
     func show(folder url: URL) {
         folder = url
+        watcher.watch(url)
         items = FSItem.contents(of: url, includeHidden: showHiddenFiles)
         sortItems()
         tableView.reloadData()
