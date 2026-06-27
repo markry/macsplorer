@@ -176,11 +176,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
     private var isCompleting = false
     private var suppressCompletion = false
 
-    /// When the typed segment has exactly one match, we skip the popover and
-    /// stash the full completed path here so Tab (fill) / Enter (fill + open)
-    /// can act on it directly — no need to arrow down to a one-item list.
-    private var singleMatchPath: String?
-
     func controlTextDidChange(_ obj: Notification) {
         guard (obj.object as? NSTextField) === addressField else { return }
         updateTerminalButton()
@@ -191,31 +186,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
         isCompleting = false
     }
 
+    /// Don't pop the completion list while backspacing — deleting shouldn't
+    /// fight you.
     func control(_ control: NSControl, textView: NSTextView,
                  doCommandBy commandSelector: Selector) -> Bool {
-        switch commandSelector {
-        case #selector(NSResponder.deleteBackward(_:)), #selector(NSResponder.deleteForward(_:)):
-            // Don't pop the completion list while backspacing — deleting
-            // shouldn't fight you.
+        if commandSelector == #selector(NSResponder.deleteBackward(_:))
+            || commandSelector == #selector(NSResponder.deleteForward(_:)) {
             suppressCompletion = true
-            singleMatchPath = nil
-            return false
-        case #selector(NSResponder.insertTab(_:)):
-            // One match: fill it in and keep typing (no view change).
-            guard let path = singleMatchPath else { return false }
-            setAddress(path, cursorAtEnd: true)
-            singleMatchPath = nil
-            return true
-        case #selector(NSResponder.insertNewline(_:)):
-            // One match: fill it in and open it (view change).
-            guard let path = singleMatchPath else { return false }
-            setAddress(path, cursorAtEnd: true)
-            singleMatchPath = nil
-            addressEntered()
-            return true
-        default:
-            return false
         }
+        return false
     }
 
     /// Type-ahead: complete the path segment under the cursor against the real
@@ -226,8 +205,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
     func control(_ control: NSControl, textView: NSTextView,
                  completions words: [String], forPartialWordRange charRange: NSRange,
                  indexOfSelectedItem index: UnsafeMutablePointer<Int>) -> [String] {
-        index.pointee = -1 // don't inline-fill; just show the list
-        singleMatchPath = nil
+        index.pointee = -1 // default: don't inline-fill; just show the list
         let text = textView.string as NSString
         let end = charRange.location + charRange.length
         let head = text.substring(to: end) as NSString
@@ -264,13 +242,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
                 return entryIsDir.boolValue ? name + "/" : name
             }
 
-        // Exactly one match: skip the popover; Tab/Enter act on it directly.
+        // Exactly one match → pre-select it so the field inline-completes: the
+        // not-yet-typed remainder appears selected, and Tab/Enter act on it
+        // without arrowing down a one-item list.
         if displays.count == 1 {
-            singleMatchPath = typedDir + displays[0]
-            return []
+            index.pointee = 0
         }
-        // Otherwise show the list. Each item replaces only `charRange`, so keep
-        // the already-typed leading chars of the segment.
+        // Each item replaces only `charRange`, so keep the already-typed leading
+        // chars of the segment.
         return displays.map { String($0.dropFirst(min(leadingLen, $0.count))) }
     }
 
