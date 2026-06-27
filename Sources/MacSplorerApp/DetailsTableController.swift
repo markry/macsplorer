@@ -64,9 +64,25 @@ final class DetailsTableController: NSObject {
         emitStatus()
     }
 
-    /// Re-list the current folder (e.g. after toggling hidden files).
+    /// Re-list the current folder in place, preserving the selection by path
+    /// (used after file changes / hidden-files toggle), unlike `show(folder:)`
+    /// which is for navigating to a new folder.
     func reload() {
-        if let folder { show(folder: folder) }
+        guard let folder else { return }
+        let selectedPaths = Set(tableView.selectedRowIndexes.filter { $0 < items.count }
+            .map { items[$0].url.standardizedFileURL.path })
+        items = FSItem.contents(of: folder, includeHidden: showHiddenFiles)
+        sortItems()
+        tableView.reloadData()
+        if !selectedPaths.isEmpty {
+            let rows = items.enumerated()
+                .filter { selectedPaths.contains($0.element.url.standardizedFileURL.path) }
+                .map(\.offset)
+            if !rows.isEmpty {
+                tableView.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
+            }
+        }
+        emitStatus()
     }
 
     // MARK: Sorting
@@ -396,9 +412,11 @@ extension DetailsTableController {
 
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession,
                    endedAt screenPoint: NSPoint, operation: NSDragOperation) {
-        // A drag OUT that ended in a move (e.g. dropped into Finder) removed the
-        // file from this folder, but the other side performed it — so refresh us.
-        if operation == .move, let folder { FolderChange.notify([folder]) }
+        // The other side (Finder/another window) may have moved files out of
+        // here, and the reported operation isn't always reliable (e.g. a
+        // "Keep Both" rename on collision reports a copy), so refresh our folder
+        // whenever a drag out of it ends.
+        if let folder { FolderChange.notify([folder]) }
     }
 
     func tableView(_ tableView: NSTableView,
