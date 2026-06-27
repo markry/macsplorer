@@ -31,11 +31,10 @@ expect:
   hidden files, `⌥⌘T` open the current folder in Terminal.
 - **Finder interop** — drag and drop to/from Finder, Reveal in Finder, Copy
   Path.
-- **Windows & tabs** — open multiple windows (`⌘N`), create tabs directly from
-  any window (`⌘T`, or the tab bar's **+** button), and use the standard macOS
-  tab bar (**View ▸ Show Tab Bar**, **Merge All Windows**) to gather existing
-  windows into one. *The tabs are fully functional today using the native macOS
-  tab bar; a future version will give them a more browser- / Explorer-like look.*
+- **Windows & tabs** — open multiple windows (`⌘N`) and browser-style tabs
+  within a window: `⌘T` for a new tab, `⌘W` to close one, or the **+** button on
+  the tab strip. Click a tab to switch; hover to reveal its close (✕). The strip
+  hides itself when only one tab is open.
 
 The one part that goes beyond what Explorer or Finder offer — and is worth
 learning — is the address bar, described next.

@@ -26,16 +26,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func newWindow(_ sender: Any?) { openWindow() }
 
-    /// New Tab (⌘T) and the tab bar's "+" button: add a fresh tab to the
-    /// frontmost window, or just open a window if there isn't one.
+    /// New Tab (⌘T): add a tab to the frontmost window, or open a window if
+    /// there isn't one.
     @objc private func newTab(_ sender: Any?) {
-        openWindow(tabbedInto: NSApp.keyWindow)
+        if let controller = keyController {
+            controller.addTab()
+            controller.window?.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow()
+        }
+    }
+
+    /// Close Tab (⌘W): close the frontmost window's active tab (or the window,
+    /// if it's the last tab).
+    @objc private func closeTab(_ sender: Any?) {
+        keyController?.closeActiveTab()
     }
 
     /// Open a new window, optionally navigated to `folder` (used by the
-    /// "Open in New Window" context-menu command). When `host` is given, the new
-    /// window is added as a tab of that window instead of standing alone.
-    func openWindow(showing folder: URL? = nil, tabbedInto host: NSWindow? = nil) {
+    /// "Open in New Window" context-menu command).
+    func openWindow(showing folder: URL? = nil) {
         let controller = MainWindowController(initialFolder: folder)
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
@@ -43,13 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         windowControllers.append(controller)
         guard let window = controller.window else { return }
-        if let host {
-            host.addTabbedWindow(window, ordered: .above)
-        } else {
-            // Cascade so a new window doesn't land exactly on the previous one.
-            cascadePoint = window.cascadeTopLeft(from: cascadePoint)
-            controller.showWindow(nil)
-        }
+        // Cascade so a new window doesn't land exactly on the previous one.
+        cascadePoint = window.cascadeTopLeft(from: cascadePoint)
+        controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -87,6 +93,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                                     keyEquivalent: "t")
         newTabItem.target = self
         fileMenu.addItem(newTabItem)
+        let closeTabItem = NSMenuItem(title: "Close Tab",
+                                      action: #selector(closeTab(_:)),
+                                      keyEquivalent: "w")
+        closeTabItem.target = self
+        fileMenu.addItem(closeTabItem)
         let newFolderItem = NSMenuItem(title: "New Folder",
                                        action: #selector(newFolder(_:)),
                                        keyEquivalent: "n")
