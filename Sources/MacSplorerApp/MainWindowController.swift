@@ -153,8 +153,72 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
             FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
+    /// Guards against re-entrancy when `complete(_:)` mutates the field, and
+    /// suppresses the completion popover while the user is deleting.
+    private var isCompleting = false
+    private var suppressCompletion = false
+
     func controlTextDidChange(_ obj: Notification) {
-        if (obj.object as? NSTextField) === addressField { updateTerminalButton() }
+        guard (obj.object as? NSTextField) === addressField else { return }
+        updateTerminalButton()
+        guard !isCompleting else { return }
+        if suppressCompletion { suppressCompletion = false; return }
+        isCompleting = true
+        addressField.currentEditor()?.complete(nil)
+        isCompleting = false
+    }
+
+    /// Don't pop the completion list while backspacing — only while typing
+    /// forward (matches the address bar feel; deleting shouldn't fight you).
+    func control(_ control: NSControl, textView: NSTextView,
+                 doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.deleteBackward(_:))
+            || commandSelector == #selector(NSResponder.deleteForward(_:)) {
+            suppressCompletion = true
+        }
+        return false
+    }
+
+    /// Type-ahead: complete the path segment under the cursor against the real
+    /// directory contents. We derive the segment from the last "/" ourselves
+    /// (rather than the field editor's word range) so names with dots — e.g.
+    /// `report.txt` — complete correctly, and we suffix folders with "/" so you
+    /// can keep traversing.
+    func control(_ control: NSControl, textView: NSTextView,
+                 completions words: [String], forPartialWordRange charRange: NSRange,
+                 indexOfSelectedItem index: UnsafeMutablePointer<Int>) -> [String] {
+        index.pointee = -1 // don't inline-fill; just show the list
+        let text = textView.string as NSString
+        let end = charRange.location + charRange.length
+        let head = text.substring(to: end) as NSString
+        let slash = head.range(of: "/", options: .backwards).location
+        guard slash != NSNotFound else { return [] }
+
+        let dirStart = slash + 1
+        let dirPath = (text.substring(to: dirStart) as NSString).expandingTildeInPath
+        let partial = text.substring(with: NSRange(location: dirStart, length: end - dirStart))
+        let leadingLen = charRange.location - dirStart
+
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dirPath, isDirectory: &isDir), isDir.boolValue,
+              let entries = try? FileManager.default.contentsOfDirectory(atPath: dirPath) else {
+            return []
+        }
+        let showHidden = Preferences.shared.showHiddenFiles
+        let lowerPartial = partial.lowercased()
+        return entries
+            .filter { name in
+                (showHidden || !name.hasPrefix(".")) && name.lowercased().hasPrefix(lowerPartial)
+            }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            .map { name -> String in
+                var entryIsDir: ObjCBool = false
+                let full = (dirPath as NSString).appendingPathComponent(name)
+                FileManager.default.fileExists(atPath: full, isDirectory: &entryIsDir)
+                let display = entryIsDir.boolValue ? name + "/" : name
+                // Replace only `charRange`; keep the already-typed leading chars.
+                return String(display.dropFirst(leadingLen))
+            }
     }
 
     private func wireControllers() {
