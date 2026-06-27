@@ -26,6 +26,20 @@ public enum FileOperations {
         return destination
     }
 
+    /// Copy `source` to an exact destination URL (caller ensures it's free).
+    @discardableResult
+    public static func copy(_ source: URL, to destination: URL) throws -> URL {
+        try FileManager.default.copyItem(at: source, to: destination)
+        return destination
+    }
+
+    /// Move `source` to an exact destination URL (caller ensures it's free).
+    @discardableResult
+    public static func move(_ source: URL, to destination: URL) throws -> URL {
+        try FileManager.default.moveItem(at: source, to: destination)
+        return destination
+    }
+
     /// Rename `url` to `newName` within the same parent. Returns the new URL.
     @discardableResult
     public static func rename(_ url: URL, to newName: String) throws -> URL {

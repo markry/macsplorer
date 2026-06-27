@@ -11,6 +11,14 @@ final class Preferences {
     private enum Key {
         static let showHiddenFiles = "showHiddenFiles"
         static let singleClickToOpen = "singleClickToOpen"
+        static let promptOnCollision = "promptOnCollision"
+    }
+
+    /// Prompt (Keep Both / Replace / Stop) on a name collision, Finder-style.
+    /// Defaults to true; false means silently keep both (append " copy").
+    var promptOnCollision: Bool {
+        get { defaults.object(forKey: Key.promptOnCollision) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.promptOnCollision) }
     }
 
     /// Both default to `false` (UserDefaults.bool returns false when unset),
