@@ -352,7 +352,16 @@ extension DetailsTableController: NSTextFieldDelegate {
         field.drawsBackground = true
         field.delegate = self
         field.stringValue = items[row].name // plain text, drop any hover underline
-        tableView.editColumn(nameColumn, row: row, with: nil, select: true)
+        tableView.editColumn(nameColumn, row: row, with: nil, select: false)
+        // Select just the base name (excluding ".ext"), Finder-style, so typing
+        // preserves the suffix. Dotfiles / extension-less names select all.
+        if let editor = field.currentEditor() {
+            let nsName = items[row].name as NSString
+            let baseLength = (nsName.deletingPathExtension as NSString).length
+            editor.selectedRange = (baseLength > 0 && baseLength < nsName.length)
+                ? NSRange(location: 0, length: baseLength)
+                : NSRange(location: 0, length: nsName.length)
+        }
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
@@ -383,6 +392,13 @@ extension DetailsTableController {
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
         guard row < items.count else { return nil }
         return items[row].url as NSURL
+    }
+
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession,
+                   endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        // A drag OUT that ended in a move (e.g. dropped into Finder) removed the
+        // file from this folder, but the other side performed it — so refresh us.
+        if operation == .move, let folder { FolderChange.notify([folder]) }
     }
 
     func tableView(_ tableView: NSTableView,
