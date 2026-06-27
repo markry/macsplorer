@@ -171,28 +171,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
             FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
-    /// Guards against re-entrancy when `complete(_:)` mutates the field, and
-    /// suppresses the completion popover while the user is deleting.
+    /// Guards against re-entrancy when `complete(_:)` mutates the field.
     private var isCompleting = false
-    private var suppressCompletion = false
+    /// Whether the change being handled came from a delete (backspace). On a
+    /// delete we still show the matches, but don't inline-fill — otherwise the
+    /// re-added suffix would fight the deletion.
+    private var lastEditWasDelete = false
 
     func controlTextDidChange(_ obj: Notification) {
         guard (obj.object as? NSTextField) === addressField else { return }
         updateTerminalButton()
         guard !isCompleting else { return }
-        if suppressCompletion { suppressCompletion = false; return }
         isCompleting = true
         addressField.currentEditor()?.complete(nil)
         isCompleting = false
+        lastEditWasDelete = false // consumed; next change defaults to typing
     }
 
-    /// Don't pop the completion list while backspacing — deleting shouldn't
-    /// fight you.
     func control(_ control: NSControl, textView: NSTextView,
                  doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.deleteBackward(_:))
             || commandSelector == #selector(NSResponder.deleteForward(_:)) {
-            suppressCompletion = true
+            lastEditWasDelete = true
         }
         return false
     }
@@ -244,8 +244,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
 
         // Exactly one match → pre-select it so the field inline-completes: the
         // not-yet-typed remainder appears selected, and Tab/Enter act on it
-        // without arrowing down a one-item list.
-        if displays.count == 1 {
+        // without arrowing down a one-item list. Skip the inline-fill while
+        // deleting, so the re-added suffix doesn't fight backspacing — the
+        // popover still shows the match for context.
+        if displays.count == 1 && !lastEditWasDelete {
             index.pointee = 0
         }
         // Each item replaces only `charRange`, so keep the already-typed leading
