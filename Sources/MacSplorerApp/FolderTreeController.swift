@@ -131,7 +131,8 @@ final class FolderTreeController: NSObject {
         var current = root
         for component in targetComponents[rootComponents.count...] {
             guard let next = current.folderChildren(includeHidden: showHiddenFiles)
-                .first(where: { $0.url.lastPathComponent == component }) else { break }
+                .first(where: { $0.url.lastPathComponent.caseInsensitiveCompare(component) == .orderedSame })
+            else { break }
             chain.append(next)
             current = next
         }

@@ -4,13 +4,14 @@ import MacSplorerCore
 /// The main MacSplorer window: a copyable path/address bar on top, a two-pane
 /// split (folder tree | details table), and a status bar below. It coordinates
 /// the two pane controllers and address-bar navigation.
-final class MainWindowController: NSWindowController, NSWindowDelegate {
+final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
 
     private let addressField = NSTextField()
     private let statusLabel = NSTextField(labelWithString: "")
     private let splitView = NSSplitView()
     private let outlineView = NSOutlineView()
     private let tableView = HoverTableView()
+    private let terminalButton = NSButton()
 
     private var treeController: FolderTreeController!
     private var detailsController: DetailsTableController!
@@ -68,6 +69,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         else { return }
         detailsController.show(folder: url)
         addressField.stringValue = url.path
+        updateTerminalButton()
         let name = url.lastPathComponent
         window?.title = name.isEmpty ? "MacSplorer" : name
     }
@@ -81,14 +83,74 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func addressEntered() {
+        let raw = (addressField.stringValue as NSString).expandingTildeInPath
+        let trimmed = (raw.count > 1 && raw.hasSuffix("/")) ? String(raw.dropLast()) : raw
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: trimmed, isDirectory: &isDirectory) else {
+            NSSound.beep()
+            return
+        }
+        let url = URL(fileURLWithPath: caseCorrectedPath(trimmed))
+        if isDirectory.boolValue {
+            navigate(to: url)
+            // Append "/" and leave the cursor at the end (no select-all) so you
+            // can keep typing the next segment — rapid keyboard traversal.
+            setAddress(url.path.hasSuffix("/") ? url.path : url.path + "/", cursorAtEnd: true)
+        } else {
+            // A file path: open it (Finder convention, not rename) and show its
+            // folder for context.
+            navigate(to: url.deletingLastPathComponent())
+            NSWorkspace.shared.open(url)
+            setAddress(url.path, cursorAtEnd: true)
+        }
+    }
+
+    /// Correct the casing of `path` to match what's actually on disk (the volume
+    /// is case-insensitive but case-preserving), component by component, without
+    /// resolving symlinks — so a path you paste elsewhere matches the real names
+    /// while friendly symlink names (e.g. ~/OneDrive) are preserved.
+    private func caseCorrectedPath(_ path: String) -> String {
+        var corrected = URL(fileURLWithPath: "/")
+        for component in URL(fileURLWithPath: path).pathComponents.dropFirst() {
+            let entries = (try? FileManager.default.contentsOfDirectory(atPath: corrected.path)) ?? []
+            let match = entries.first { $0.caseInsensitiveCompare(component) == .orderedSame }
+            corrected.appendPathComponent(match ?? component)
+        }
+        return corrected.path
+    }
+
+    /// Set the address field text, keeping focus with the cursor at the end.
+    private func setAddress(_ text: String, cursorAtEnd: Bool) {
+        addressField.stringValue = text
+        updateTerminalButton()
+        guard cursorAtEnd else { return }
+        window?.makeFirstResponder(addressField)
+        if let editor = addressField.currentEditor() {
+            editor.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        }
+    }
+
+    @objc private func openInTerminal() {
         let path = (addressField.stringValue as NSString).expandingTildeInPath
         var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-           isDirectory.boolValue {
-            navigate(to: URL(fileURLWithPath: path))
-        } else {
-            NSSound.beep()
-        }
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { NSSound.beep(); return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", "Terminal", path]
+        try? process.run()
+    }
+
+    /// Enable the Terminal button only when the field holds a real folder path.
+    private func updateTerminalButton() {
+        let path = (addressField.stringValue as NSString).expandingTildeInPath
+        var isDirectory: ObjCBool = false
+        terminalButton.isEnabled =
+            FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        if (obj.object as? NSTextField) === addressField { updateTerminalButton() }
     }
 
     private func wireControllers() {
@@ -123,6 +185,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let contentView = window?.contentView else { return }
 
         configureAddressField()
+        configureTerminalButton()
         configureStatusLabel()
         let leftScroll = makeFolderTree()
         let rightScroll = makeDetailsTable()
@@ -134,6 +197,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         splitView.addArrangedSubview(rightScroll)
 
         contentView.addSubview(addressField)
+        contentView.addSubview(terminalButton)
         contentView.addSubview(splitView)
         contentView.addSubview(statusLabel)
 
@@ -144,7 +208,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         NSLayoutConstraint.activate([
             addressField.topAnchor.constraint(equalTo: contentView.topAnchor, constant: pad),
             addressField.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: pad),
-            addressField.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -pad),
+            addressField.trailingAnchor.constraint(equalTo: terminalButton.leadingAnchor, constant: -6),
+
+            terminalButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
+            terminalButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -pad),
 
             splitView.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: pad),
             splitView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
@@ -169,7 +236,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         addressField.font = .systemFont(ofSize: 13)
         addressField.lineBreakMode = .byTruncatingMiddle
         addressField.placeholderString = "Path"
+        addressField.delegate = self
         addressField.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    private func configureTerminalButton() {
+        terminalButton.translatesAutoresizingMaskIntoConstraints = false
+        terminalButton.bezelStyle = .texturedRounded
+        terminalButton.image = NSImage(systemSymbolName: "terminal",
+                                        accessibilityDescription: "Open in Terminal")
+        terminalButton.imagePosition = .imageOnly
+        terminalButton.target = self
+        terminalButton.action = #selector(openInTerminal)
+        terminalButton.toolTip = "Open this folder in Terminal"
+        terminalButton.setContentHuggingPriority(.required, for: .horizontal)
     }
 
     private func configureStatusLabel() {
