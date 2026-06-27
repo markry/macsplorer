@@ -103,9 +103,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         detailsController.onStatus = { [weak self] status in
             self?.statusLabel.stringValue = status
         }
-        detailsController.onMutated = { [weak self] folder in
-            self?.treeController.refreshSubtree(at: folder)
-        }
 
         addressField.target = self
         addressField.action = #selector(addressEntered)

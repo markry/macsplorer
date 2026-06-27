@@ -14,10 +14,6 @@ final class DetailsTableController: NSObject {
     /// Fresh status-bar text (item / selection counts).
     var onStatus: ((String) -> Void)?
 
-    /// Called after a file operation mutates `folder`, so the coordinator can
-    /// refresh the tree's view of it.
-    var onMutated: ((URL) -> Void)?
-
     private var renamingRow = -1
 
     /// Whether hidden (dot) files are shown. Set, then call `reload`.
@@ -42,6 +38,21 @@ final class DetailsTableController: NSObject {
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         configureSorting()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(folderDidChange(_:)),
+            name: FolderChange.didChange, object: nil)
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    /// Re-list when a file operation (in this or another window) changed the
+    /// folder we're showing.
+    @objc private func folderDidChange(_ note: Notification) {
+        guard let folder else { return }
+        let path = folder.standardizedFileURL.path
+        if FolderChange.folders(from: note).contains(where: { $0.path == path }) {
+            reload()
+        }
     }
 
     func show(folder url: URL) {
@@ -267,17 +278,19 @@ extension DetailsTableController: HoverTableFileActions {
         let (urls, move) = Clipboard.shared.pasteSource()
         guard !urls.isEmpty else { return }
         var pasted: [String] = []
+        var affected: Set<URL> = [folder]
         for url in urls {
             do {
                 let dest = move ? try FileOperations.move(url, into: folder)
                                 : try FileOperations.copy(url, into: folder)
                 pasted.append(dest.lastPathComponent)
+                if move { affected.insert(url.deletingLastPathComponent()) }
             } catch {
                 NSSound.beep()
             }
         }
         if move { Clipboard.shared.clearAfterMove() }
-        didMutate(folder, selecting: pasted)
+        finishMutation(affected: affected, selecting: pasted)
     }
 
     func trashSelectedItems() {
@@ -286,7 +299,7 @@ extension DetailsTableController: HoverTableFileActions {
         for url in urls {
             do { _ = try FileOperations.moveToTrash(url) } catch { NSSound.beep() }
         }
-        didMutate(folder)
+        finishMutation(affected: [folder])
     }
 
     func renameSelectedItem() {
@@ -298,7 +311,7 @@ extension DetailsTableController: HoverTableFileActions {
         guard let folder else { return }
         do {
             let url = try FileOperations.newFolder(in: folder)
-            didMutate(folder, selecting: [url.lastPathComponent], renameFirst: true)
+            finishMutation(affected: [folder], selecting: [url.lastPathComponent], renameFirst: true)
         } catch {
             NSSound.beep()
         }
@@ -308,11 +321,10 @@ extension DetailsTableController: HoverTableFileActions {
         tableView.selectedRowIndexes.filter { $0 < items.count }.map { items[$0].url }
     }
 
-    /// Re-list `folder`, refresh the tree, and optionally select/begin-rename the
-    /// items with the given names.
-    private func didMutate(_ folder: URL, selecting names: [String] = [], renameFirst: Bool = false) {
-        reload()
-        onMutated?(folder)
+    /// Broadcast the affected folders (refreshing this + other windows + the
+    /// tree), then select/begin-rename newly-created items in this folder.
+    private func finishMutation(affected: Set<URL>, selecting names: [String] = [], renameFirst: Bool = false) {
+        FolderChange.notify(Array(affected))
         guard !names.isEmpty else { return }
         let wanted = Set(names)
         let rows = items.enumerated()
@@ -354,8 +366,8 @@ extension DetailsTableController: NSTextFieldDelegate {
         if !canceled, newName.trimmingCharacters(in: .whitespacesAndNewlines) != item.name {
             do {
                 let dest = try FileOperations.rename(item.url, to: newName)
-                didMutate(folder ?? item.url.deletingLastPathComponent(),
-                          selecting: [dest.lastPathComponent])
+                finishMutation(affected: [item.url.deletingLastPathComponent()],
+                               selecting: [dest.lastPathComponent])
                 return
             } catch {
                 NSSound.beep()
@@ -396,23 +408,19 @@ extension DetailsTableController {
 
         let move = dragOperation(for: info) == .move
         var landed: [String] = []
+        var affected: Set<URL> = [destination]
         for url in urls where !isSelfOrDescendant(url, of: destination) {
             do {
                 let dest = move ? try FileOperations.move(url, into: destination)
                                 : try FileOperations.copy(url, into: destination)
                 landed.append(dest.lastPathComponent)
+                if move { affected.insert(url.deletingLastPathComponent()) }
             } catch {
                 NSSound.beep()
             }
         }
-
-        if samePath(destination, folder) {
-            didMutate(destination, selecting: landed) // dropped into the visible folder
-        } else {
-            reload()                                   // a move may have emptied rows here
-            if let folder { onMutated?(folder) }
-            onMutated?(destination)                    // refresh the target subfolder's subtree
-        }
+        finishMutation(affected: affected,
+                       selecting: samePath(destination, folder) ? landed : [])
         return true
     }
 
