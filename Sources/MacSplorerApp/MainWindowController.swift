@@ -51,14 +51,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
     }
 
     /// Vend a custom field editor for the address field so we can navigate when a
-    /// completion is committed with Return (not just fill the field).
+    /// completion is committed — by either Return or Tab. Both descend into the
+    /// completed folder (revealing its contents, so you can see what to type
+    /// next) or open the completed file; they behave identically.
     func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? {
         guard (client as AnyObject?) === addressField else { return nil }
         if addressFieldEditor == nil {
             let editor = AddressFieldEditor()
             editor.isFieldEditor = true
             editor.onCommit = { [weak self] movement in
-                guard movement == NSTextMovement.return.rawValue else { return }
+                guard movement == NSTextMovement.return.rawValue
+                    || movement == NSTextMovement.tab.rawValue else { return }
                 // Defer so the completion machinery finishes inserting first.
                 DispatchQueue.main.async { self?.addressEntered() }
             }

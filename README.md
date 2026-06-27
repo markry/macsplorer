@@ -62,11 +62,13 @@ navigation:
 - **Type-ahead completion.** As you type a segment, the FAB matches it against
   the real directory contents (folders suffixed with `/` so you can keep
   traversing):
-  - **Multiple matches** → a list appears. Arrow down to a choice; **Enter**
-    accepts *and* opens it, **Tab** accepts it and leaves you typing.
   - **One match** → the remainder is inline-filled and shown selected, so you
-    can see exactly what's matched. **Tab** accepts it (keep typing); **Enter**
-    accepts and opens it.
+    can see exactly what's matched.
+  - **Multiple matches** → a list appears; arrow down to a choice.
+  - **Tab and Enter both accept *and* descend** into the completed folder (or
+    open the completed file). Because the app navigates instantly, descending
+    reveals the folder's contents in the details pane — so you can see what to
+    type for the *next* level. Tab and Enter are interchangeable here.
   - **While deleting** (backspacing), the match list still updates so you keep
     your bearings — it just doesn't inline-fill, so it won't fight you.
 
