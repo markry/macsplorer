@@ -31,6 +31,10 @@ expect:
   hidden files, `⌥⌘T` open the current folder in Terminal.
 - **Finder interop** — drag and drop to/from Finder, Reveal in Finder, Copy
   Path.
+- **Windows & tabs** — open multiple windows (`⌘N`), and use the standard macOS
+  tab bar (**View ▸ Show Tab Bar**, **Merge All Windows**) to gather them into
+  one tabbed window. *The tabs are fully functional today using the native macOS
+  tab bar; a future version will give them a more browser- / Explorer-like look.*
 
 The one part that goes beyond what Explorer or Finder offer — and is worth
 learning — is the address bar, described next.
@@ -64,10 +68,6 @@ navigation:
     accepts and opens it.
   - **While deleting** (backspacing), the match list still updates so you keep
     your bearings — it just doesn't inline-fill, so it won't fight you.
-
-  *These same-window Tab-completion behaviors are fully functional today; a
-  future version will prettify their presentation (for example, gray inline
-  suggestion text in place of the current selection highlight).*
 
 - **Tab into the field** puts the cursor at the end (ready to extend the path)
   rather than selecting everything; clicking still places the cursor where you
