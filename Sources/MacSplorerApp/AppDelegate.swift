@@ -24,8 +24,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     // MARK: Windows
 
-    @objc private func newWindow(_ sender: Any?) {
-        let controller = MainWindowController()
+    @objc private func newWindow(_ sender: Any?) { openWindow() }
+
+    /// Open a new window, optionally navigated to `folder` (used by the
+    /// "Open in New Window" context-menu command).
+    func openWindow(showing folder: URL? = nil) {
+        let controller = MainWindowController(initialFolder: folder)
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.windowControllers.removeAll { $0 === controller }
@@ -97,6 +101,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Duplicate",
+                         action: #selector(HoverTableView.duplicate(_:)), keyEquivalent: "d")
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Rename",
                          action: #selector(HoverTableView.renameItem(_:)), keyEquivalent: "")

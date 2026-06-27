@@ -44,7 +44,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
         onClose?()
     }
 
-    convenience init() {
+    private var initialFolder: URL?
+
+    convenience init(initialFolder: URL? = nil) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 620),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -55,6 +57,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
         window.minSize = NSSize(width: 680, height: 380)
         window.center()
         self.init(window: window)
+        self.initialFolder = initialFolder
         window.delegate = self
         buildLayout()
         wireControllers()
@@ -181,6 +184,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
 
         // Selecting Home fires onSelect → navigate, populating the details pane.
         treeController.selectHome()
+        if let initialFolder { navigate(to: initialFolder) }
     }
 
     // MARK: Layout

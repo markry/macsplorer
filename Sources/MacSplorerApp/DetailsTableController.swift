@@ -574,6 +574,7 @@ extension DetailsTableController {
         let isFolder = item.isDirectory && !item.isPackage
         add(menu, "Open", #selector(ctxOpen(_:)))
         if isFolder {
+            add(menu, "Open in New Window", #selector(ctxOpenInNewWindow(_:)))
             add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
             add(menu, "New Folder", #selector(ctxNewFolderInClicked(_:)))
         }
@@ -610,6 +611,11 @@ extension DetailsTableController {
     @objc private func ctxNewFolderHere(_ sender: Any?) { makeNewFolder() }
     @objc private func ctxNewFolderInClicked(_ sender: Any?) {
         if let url = singleSelectedFolderURL() { makeNewFolder(in: url) }
+    }
+    @objc private func ctxOpenInNewWindow(_ sender: Any?) {
+        if let url = singleSelectedFolderURL() {
+            (NSApp.delegate as? AppDelegate)?.openWindow(showing: url)
+        }
     }
 
     func duplicateSelectedItems() {

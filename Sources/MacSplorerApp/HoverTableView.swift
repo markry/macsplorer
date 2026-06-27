@@ -24,6 +24,7 @@ protocol HoverTableFileActions: AnyObject {
     func pasteIntoFolder()
     func renameSelectedItem()
     func trashSelectedItems()
+    func duplicateSelectedItems()
     var hasSelection: Bool { get }
     var canPaste: Bool { get }
     /// Build the right-click menu for the clicked row (or -1 for empty space).
@@ -133,6 +134,7 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
     @objc func paste(_ sender: Any?) { fileActions?.pasteIntoFolder() }
     @objc func renameItem(_ sender: Any?) { fileActions?.renameSelectedItem() }
     @objc func moveToTrash(_ sender: Any?) { fileActions?.trashSelectedItems() }
+    @objc func duplicate(_ sender: Any?) { fileActions?.duplicateSelectedItems() }
 
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -147,8 +149,8 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
-        case #selector(copy(_:)), #selector(cut(_:)),
-             #selector(renameItem(_:)), #selector(moveToTrash(_:)):
+        case #selector(copy(_:)), #selector(cut(_:)), #selector(renameItem(_:)),
+             #selector(moveToTrash(_:)), #selector(duplicate(_:)):
             return fileActions?.hasSelection ?? false
         case #selector(paste(_:)):
             return fileActions?.canPaste ?? false
