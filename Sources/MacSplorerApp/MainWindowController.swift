@@ -195,6 +195,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
         guard slash != NSNotFound else { return [] }
 
         let dirStart = slash + 1
+        // The field editor's word range can start before our path segment (e.g.
+        // just after typing a "/"); skip completion that instant rather than
+        // dropping a negative number of chars below.
+        guard charRange.location >= dirStart, end >= dirStart else { return [] }
         let dirPath = (text.substring(to: dirStart) as NSString).expandingTildeInPath
         let partial = text.substring(with: NSRange(location: dirStart, length: end - dirStart))
         let leadingLen = charRange.location - dirStart
@@ -217,7 +221,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
                 FileManager.default.fileExists(atPath: full, isDirectory: &entryIsDir)
                 let display = entryIsDir.boolValue ? name + "/" : name
                 // Replace only `charRange`; keep the already-typed leading chars.
-                return String(display.dropFirst(leadingLen))
+                return String(display.dropFirst(min(leadingLen, display.count)))
             }
     }
 
