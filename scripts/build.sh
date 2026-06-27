@@ -34,8 +34,23 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/MacSplorer"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
-echo "==> ad-hoc signing for local run"
-codesign --force --sign - "$APP"
+# Prefer a stable Developer ID identity so macOS TCC permissions (folder access,
+# Full Disk Access) persist across rebuilds — ad-hoc signing gets a new code
+# identity every build and loses them, which breaks watching/reading protected
+# folders (Desktop, Documents, cloud folders…). Falls back to ad-hoc when no
+# Developer ID cert is present (e.g. for contributors).
+IDENTITY="${IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+    IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+                | grep -o 'Developer ID Application: [^"]*' | head -1)"
+fi
+if [ -n "$IDENTITY" ]; then
+    echo "==> signing with: $IDENTITY"
+    codesign --force --sign "$IDENTITY" "$APP"
+else
+    echo "==> ad-hoc signing for local run (no Developer ID cert found)"
+    codesign --force --sign - "$APP"
+fi
 
 echo "==> done."
 echo "    Launch with:  open \"$APP\""
