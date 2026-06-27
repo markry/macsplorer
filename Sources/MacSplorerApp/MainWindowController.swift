@@ -9,7 +9,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
     private let addressField = NSTextField()
     private let statusLabel = NSTextField(labelWithString: "")
     private let splitView = NSSplitView()
-    private let outlineView = NSOutlineView()
+    private let outlineView = FolderOutlineView()
     private let tableView = HoverTableView()
     private let terminalButton = NSButton()
 
@@ -138,10 +138,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSTextFi
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
               isDirectory.boolValue else { NSSound.beep(); return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-a", "Terminal", path]
-        try? process.run()
+        Shell.openInTerminal(URL(fileURLWithPath: path))
     }
 
     /// Whether the address field currently holds a real folder (drives the

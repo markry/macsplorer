@@ -5,7 +5,7 @@ import MacSplorerCore
 /// expanded, rooted at Home and the startup volume. Reports the selected
 /// folder's URL via `onSelect`.
 final class FolderTreeController: NSObject {
-    private let outlineView: NSOutlineView
+    private let outlineView: FolderOutlineView
     private let roots: [FSItem]
 
     /// Called when the user selects a folder in the tree.
@@ -16,6 +16,9 @@ final class FolderTreeController: NSObject {
 
     /// Items whose subfolder-check is currently running, to avoid duplicate work.
     private var pendingSubfolderChecks = Set<ObjectIdentifier>()
+
+    /// The folder the context menu was opened on (the right-clicked row).
+    private var clickedFolder: FSItem?
 
     /// Determine off the main thread whether `item` actually has subfolders, so
     /// the disclosure triangle only appears when expanding would do something.
@@ -57,7 +60,7 @@ final class FolderTreeController: NSObject {
         outlineView.reloadItem(item, reloadChildren: true)
     }
 
-    init(outlineView: NSOutlineView) {
+    init(outlineView: FolderOutlineView) {
         self.outlineView = outlineView
         self.roots = [
             FSItem(url: FileManager.default.homeDirectoryForCurrentUser),
@@ -66,6 +69,7 @@ final class FolderTreeController: NSObject {
         super.init()
         outlineView.dataSource = self
         outlineView.delegate = self
+        outlineView.onContextMenu = { [weak self] row in self?.contextMenu(forRow: row) }
         outlineView.reloadData()
         NotificationCenter.default.addObserver(
             self, selector: #selector(folderDidChange(_:)),
@@ -205,5 +209,83 @@ extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
         let row = outlineView.selectedRow
         guard row >= 0, let item = outlineView.item(atRow: row) as? FSItem else { return }
         onSelect?(item.url)
+    }
+}
+
+// MARK: - Context menu
+
+extension FolderTreeController {
+    /// The folder under the right-clicked row, if any.
+    private func clickedItem(forRow row: Int) -> FSItem? {
+        guard row >= 0 else { return nil }
+        return outlineView.item(atRow: row) as? FSItem
+    }
+
+    private func contextMenu(forRow row: Int) -> NSMenu? {
+        guard let item = clickedItem(forRow: row) else { return nil }
+        clickedFolder = item
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        add(menu, "Open", #selector(ctxOpen(_:)))
+        add(menu, "Open in New Window", #selector(ctxOpenInNewWindow(_:)))
+        add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
+        menu.addItem(.separator())
+        add(menu, "New Folder", #selector(ctxNewFolder(_:)))
+        add(menu, "Move to Trash", #selector(ctxTrash(_:)))
+        menu.addItem(.separator())
+        add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
+        add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
+        return menu
+    }
+
+    private func add(_ menu: NSMenu, _ title: String, _ action: Selector, enabled: Bool = true) {
+        let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        menuItem.target = self
+        menuItem.isEnabled = enabled
+        menu.addItem(menuItem)
+    }
+
+    @objc private func ctxOpen(_ sender: Any?) {
+        guard let folder = clickedFolder else { return }
+        onSelect?(folder.url)
+    }
+
+    @objc private func ctxOpenInNewWindow(_ sender: Any?) {
+        guard let folder = clickedFolder else { return }
+        (NSApp.delegate as? AppDelegate)?.openWindow(showing: folder.url)
+    }
+
+    @objc private func ctxTerminal(_ sender: Any?) {
+        guard let folder = clickedFolder else { return }
+        Shell.openInTerminal(folder.url)
+    }
+
+    @objc private func ctxNewFolder(_ sender: Any?) {
+        guard let folder = clickedFolder else { return }
+        do {
+            _ = try FileOperations.newFolder(in: folder.url)
+            outlineView.expandItem(folder)
+            FolderChange.notify([folder.url])
+        } catch { NSSound.beep() }
+    }
+
+    @objc private func ctxTrash(_ sender: Any?) {
+        guard let folder = clickedFolder else { return }
+        let parent = folder.url.deletingLastPathComponent()
+        do {
+            try FileOperations.moveToTrash(folder.url)
+            FolderChange.notify([parent])
+        } catch { NSSound.beep() }
+    }
+
+    @objc private func ctxReveal(_ sender: Any?) {
+        guard let folder = clickedFolder else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([folder.url])
+    }
+
+    @objc private func ctxCopyPath(_ sender: Any?) {
+        guard let folder = clickedFolder else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(folder.url.path, forType: .string)
     }
 }
