@@ -52,6 +52,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// Re-read persisted preferences into every tab, so all stay in sync.
     func applyPreferences() { panes.forEach { $0.applyPreferences() } }
 
+    /// Rebuild details-pane columns in every tab (after a column toggle).
+    func applyColumns() { panes.forEach { $0.rebuildDetailsColumns() } }
+
+    /// Set this window's right-pane view mode/size (all its tabs); other windows
+    /// are left alone — view mode is per-window.
+    func setViewMode(_ mode: String, iconSize: String?) {
+        panes.forEach { $0.setViewMode(mode, iconSize: iconSize) }
+    }
+
+    /// The active tab's current view mode + icon size, for menu checkmarks.
+    var activeViewMode: (mode: String, iconSize: String)? {
+        activePane.map { ($0.currentViewMode, $0.currentIconSize) }
+    }
+
     // MARK: - Tabs
 
     /// Open a new tab (File ▸ New Tab / ⌘T / the strip's "+").

@@ -8,22 +8,37 @@ import MacSplorerCore
 final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSplitViewDelegate {
 
     private let addressField = AddressTextField()
+    private let pathBar = PathBarView()
     private var addressFieldEditor: AddressFieldEditor?
     private let statusLabel = NSTextField(labelWithString: "")
+    private let viewModeControl = ViewModeControl()
     private let splitView = NSSplitView()
     private let favoritesSplit = FavoritesSplitView()
     private let outlineView = FolderOutlineView()
     private let tableView = HoverTableView()
     private let terminalButton = NSButton()
 
+    /// The right pane's swappable host (details table or icon grid live inside).
+    private let rightContainer = NSView()
+    private var detailsScroll: NSScrollView!
+
+    /// The shared model + commands for this tab; both views present it.
+    private let contents = FolderContents()
     private var treeController: FolderTreeController!
     private var detailsController: DetailsTableController!
+    /// Built lazily the first time the icon view is shown.
+    private var iconController: IconViewController?
     private let favoritesController = FavoritesController()
+
+    /// Right-pane view ("list"/"icon") + icon size are per-window state — changing
+    /// one window doesn't disturb others. Seeded from the persisted default.
+    private var viewMode = Preferences.shared.rightPaneView
+    private var iconSize = Preferences.shared.iconSize
 
     private let initialFolder: URL?
 
     /// The folder this tab is currently showing.
-    var currentFolder: URL? { detailsController?.folder }
+    var currentFolder: URL? { contents.folder }
 
     /// Fired when the shown folder changes, so the host can retitle the tab/window.
     var onTitleChange: ((String) -> Void)?
@@ -38,16 +53,73 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
     // MARK: - Host-facing commands
 
-    func openSelection() { detailsController.openSelected() }
-    func makeNewFolder() { detailsController.makeNewFolder() }
+    func openSelection() { contents.openSelected() }
+    func makeNewFolder() { contents.makeNewFolder() }
+
+    /// Rebuild the details-pane columns from the persisted visible set (after the
+    /// user toggles a column on/off).
+    func rebuildDetailsColumns() { detailsController.rebuildColumns() }
+
+    var currentViewMode: String { viewMode }
+    var currentIconSize: String { iconSize }
+
+    /// Set this window's right-pane view + size, persisting it as the default for
+    /// newly-opened windows (without disturbing other open windows).
+    func setViewMode(_ mode: String, iconSize size: String?) {
+        viewMode = mode
+        if let size { iconSize = size }
+        Preferences.shared.rightPaneView = mode
+        if let size { Preferences.shared.iconSize = size }
+        applyViewMode()
+    }
+
+    /// Switch the right pane between the details list and the icon grid (and apply
+    /// the chosen icon size) per this window's `viewMode` / `iconSize`.
+    func applyViewMode() {
+        let size = IconSize(rawValue: iconSize) ?? .large
+        if viewMode == "icon" {
+            let controller = iconController ?? {
+                let made = IconViewController(contents: contents)
+                made.onTab = { [weak self] back in self?.advanceFocus(from: .right, backward: back) }
+                iconController = made
+                return made
+            }()
+            controller.setSize(size)
+            showRightView(controller.scrollView)
+            controller.activate()
+            viewModeControl.setActive(.icon(size))
+        } else {
+            showRightView(detailsScroll)
+            detailsController.activate()
+            viewModeControl.setActive(.list)
+        }
+    }
+
+    private func showRightView(_ view: NSView) {
+        guard view.superview !== rightContainer || rightContainer.subviews.count != 1 else {
+            // Already the lone child — still re-pin in case size class changed.
+            return
+        }
+        rightContainer.subviews.forEach { $0.removeFromSuperview() }
+        view.translatesAutoresizingMaskIntoConstraints = false
+        rightContainer.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.topAnchor.constraint(equalTo: rightContainer.topAnchor),
+            view.leadingAnchor.constraint(equalTo: rightContainer.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: rightContainer.trailingAnchor),
+            view.bottomAnchor.constraint(equalTo: rightContainer.bottomAnchor),
+        ])
+    }
 
     func applyPreferences() {
         let prefs = Preferences.shared
         treeController.showHiddenFiles = prefs.showHiddenFiles
-        detailsController.showHiddenFiles = prefs.showHiddenFiles
+        contents.showHiddenFiles = prefs.showHiddenFiles
+        contents.singleClickToOpen = prefs.singleClickToOpen
+        contents.showUpItem = prefs.showParentItem
         detailsController.singleClickToOpen = prefs.singleClickToOpen
-        detailsController.reload()
-        treeController.refresh(revealing: detailsController.folder)
+        contents.reload()
+        treeController.refresh(revealing: contents.folder)
         applyFavoritesVisibility()
     }
 
@@ -92,9 +164,10 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         return addressFieldEditor
     }
 
-    /// Put keyboard focus in the address field (used when a new tab opens).
+    /// Put keyboard focus in the address field (used when a new tab opens). Enters
+    /// edit mode first, since the field is hidden behind the breadcrumb otherwise.
     func focusAddressField() {
-        view.window?.makeFirstResponder(addressField)
+        beginAddressEditing()
     }
 
     /// Give the folder tree keyboard focus so its selection renders active
@@ -109,10 +182,11 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// Update the details table + address bar + title for `url`. Idempotent, so
     /// the tree-reveal round-trip can call back in without reloading or looping.
     private func showFolder(_ url: URL) {
-        guard detailsController.folder?.standardizedFileURL.path != url.standardizedFileURL.path
+        guard contents.folder?.standardizedFileURL.path != url.standardizedFileURL.path
         else { return }
-        detailsController.show(folder: url)
+        contents.show(folder: url)
         addressField.stringValue = url.path
+        pathBar.setURL(url)
         updateTerminalButton()
         let name = url.lastPathComponent
         onTitleChange?(name.isEmpty ? "MacSplorer" : name)
@@ -199,6 +273,18 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// re-added suffix would fight the deletion.
     private var lastEditWasDelete = false
 
+    /// When focus genuinely leaves the address field, flip back to the breadcrumb.
+    /// Deferred + re-checked because Enter navigates and *re-focuses* the field
+    /// (we stay in edit mode then); only a real blur should switch.
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === addressField else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.addressField.currentEditor() == nil else { return }
+            self.setEditing(false)
+            self.pathBar.setURL(self.contents.folder)
+        }
+    }
+
     func controlTextDidChange(_ obj: Notification) {
         guard (obj.object as? NSTextField) === addressField else { return }
         updateTerminalButton()
@@ -214,6 +300,16 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         if commandSelector == #selector(NSResponder.deleteBackward(_:))
             || commandSelector == #selector(NSResponder.deleteForward(_:)) {
             lastEditWasDelete = true
+        }
+        // Tab reaches here only when no completion is consuming it (nothing left to
+        // resolve) — so it advances to the next pane instead of re-descending.
+        if commandSelector == #selector(NSResponder.insertTab(_:)) {
+            advanceFocus(from: .fab, backward: false)
+            return true
+        }
+        if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+            advanceFocus(from: .fab, backward: true)
+            return true
         }
         return false
     }
@@ -280,7 +376,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
     private func wireControllers() {
         treeController = FolderTreeController(outlineView: outlineView)
-        detailsController = DetailsTableController(tableView: tableView)
+        detailsController = DetailsTableController(tableView: tableView, contents: contents)
 
         // Tree click: just show the folder (the tree is already there — don't
         // re-reveal, which would loop). Double-click in details: navigate +
@@ -289,37 +385,131 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         // Clicking a Favorite (in the pinned pane above) jumps there: show it AND
         // expand/reveal it in the tree below.
         favoritesController.onSelect = { [weak self] url in self?.navigate(to: url) }
-        // Tree folder commands route to the details pane, which owns the file-op
+        // Tree folder commands route to the shared model, which owns the file-op
         // implementations — so the left and right folder menus behave identically.
         treeController.onFolderCommand = { [weak self] command, url in
             guard let self else { return }
             switch command {
-            case .cut: self.detailsController.cutFolder(url)
-            case .copy: self.detailsController.copyFolder(url)
-            case .duplicate: self.detailsController.duplicateFolder(url)
-            case .trash: self.detailsController.trashFolder(url)
-            case .rename: self.detailsController.renameFolder(url)
-            case .newFolder: self.detailsController.makeNewFolder(in: url)
-            case .newDocument(let type): self.detailsController.makeNewDocument(type, in: url)
-            case .internetShortcut: self.detailsController.makeInternetShortcut(in: url)
+            case .cut: self.contents.cutFolder(url)
+            case .copy: self.contents.copyFolder(url)
+            case .duplicate: self.contents.duplicateFolder(url)
+            case .trash: self.contents.trashFolder(url)
+            case .rename: self.contents.renameFolder(url)
+            case .newFolder: self.contents.makeNewFolder(in: url)
+            case .newDocument(let type): self.contents.makeNewDocument(type, in: url)
+            case .internetShortcut: self.contents.makeInternetShortcut(in: url)
             }
         }
-        detailsController.onOpenFolder = { [weak self] url in self?.navigate(to: url) }
-        detailsController.onStatus = { [weak self] status in
+        contents.onOpenFolder = { [weak self] url in self?.navigate(to: url) }
+        contents.onStatus = { [weak self] status in
             self?.statusLabel.stringValue = status
         }
 
         addressField.target = self
         addressField.action = #selector(addressEntered)
+        // Breadcrumb: a segment click jumps to that ancestor; a click on the bar's
+        // empty area switches to the editable field (Explorer-style).
+        pathBar.onSegment = { [weak self] url in self?.navigate(to: url) }
+        pathBar.onActivateEdit = { [weak self] in self?.beginAddressEditing() }
+        // Tab cycles focus between the main panes.
+        tableView.onTab = { [weak self] back in self?.advanceFocus(from: .right, backward: back) }
+        outlineView.onTab = { [weak self] back in self?.advanceFocus(from: .tree, backward: back) }
+        favoritesController.onTab = { [weak self] back in self?.advanceFocus(from: .favorites, backward: back) }
+        // View mode is per-window: apply to this window's tabs only.
+        viewModeControl.onSelect = { [weak self] mode in
+            guard let self,
+                  let windowController = self.view.window?.windowController as? MainWindowController
+            else { return }
+            switch mode {
+            case .list: windowController.setViewMode("list", iconSize: nil)
+            case .icon(let size): windowController.setViewMode("icon", iconSize: size.rawValue)
+            }
+        }
 
         let prefs = Preferences.shared
         treeController.showHiddenFiles = prefs.showHiddenFiles
-        detailsController.showHiddenFiles = prefs.showHiddenFiles
+        contents.showHiddenFiles = prefs.showHiddenFiles
+        contents.singleClickToOpen = prefs.singleClickToOpen
+        contents.showUpItem = prefs.showParentItem
         detailsController.singleClickToOpen = prefs.singleClickToOpen
 
-        // Selecting Home fires onSelect → navigate, populating the details pane.
+        // Install the active right-pane view (list/icon) before the first
+        // navigation, so the model has a presenter to reload into.
+        applyViewMode()
+
+        // Selecting Home fires onSelect → navigate, populating the pane.
         treeController.selectHome()
         if let initialFolder { navigate(to: initialFolder) }
+
+        // Start in breadcrumb mode showing the current folder.
+        setEditing(false)
+        pathBar.setURL(contents.folder)
+    }
+
+    // MARK: Tab cycling between the main panes
+
+    private enum Pane { case fab, right, tree, favorites }
+
+    /// Tab moves through FAB → right pane → tree → Favorites → back to FAB (and
+    /// Shift-Tab reverses). Favorites is skipped when its pane is hidden.
+    private func advanceFocus(from pane: Pane, backward: Bool) {
+        var order: [Pane] = [.fab, .right, .tree]
+        if Preferences.shared.showFavorites { order.append(.favorites) }
+        guard let index = order.firstIndex(of: pane) else { return }
+        let count = order.count
+        let next = backward ? (index - 1 + count) % count : (index + 1) % count
+        focusPane(order[next])
+    }
+
+    private func focusPane(_ pane: Pane) {
+        switch pane {
+        case .fab:
+            beginAddressEditing()
+        case .right:
+            if viewMode == "icon", let icon = iconController {
+                view.window?.makeFirstResponder(icon.keyView)
+                icon.ensureSelection()
+            } else {
+                view.window?.makeFirstResponder(tableView)
+                if tableView.selectedRow < 0, let first = contents.firstSelectableIndex {
+                    tableView.selectRowIndexes([first], byExtendingSelection: false)
+                }
+            }
+        case .tree:
+            view.window?.makeFirstResponder(outlineView)
+            ensureRowSelection(outlineView)
+        case .favorites:
+            view.window?.makeFirstResponder(favoritesController.keyView)
+            favoritesController.ensureSelection()
+        }
+    }
+
+    /// Give a table/outline a hard selection (first row) if it has none, so Tab
+    /// leaves the keyboard immediately usable.
+    private func ensureRowSelection(_ tableView: NSTableView) {
+        if tableView.selectedRow < 0 && tableView.numberOfRows > 0 {
+            tableView.selectRowIndexes([0], byExtendingSelection: false)
+        }
+    }
+
+    /// Swap the address area between the editable field and the breadcrumb.
+    private func setEditing(_ editing: Bool) {
+        addressField.isHidden = !editing
+        pathBar.isHidden = editing
+    }
+
+    /// Enter edit mode: reveal the field with the full real path, a trailing "/"
+    /// appended and the cursor placed after it — so you can immediately keep
+    /// typing the next segment, just like descending with the FAB.
+    private func beginAddressEditing() {
+        setEditing(true)
+        let path = contents.folder?.path ?? addressField.stringValue
+        let text = path.hasSuffix("/") ? path : path + "/"
+        addressField.stringValue = text
+        updateTerminalButton()
+        view.window?.makeFirstResponder(addressField)
+        addressField.currentEditor()?.selectedRange =
+            NSRange(location: (text as NSString).length, length: 0)
     }
 
     // MARK: - Layout
@@ -331,18 +521,23 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         configureTerminalButton()
         configureStatusLabel()
         let leftPane = makeLeftPane()
-        let rightScroll = makeDetailsTable()
+        detailsScroll = makeDetailsTable()
+        rightContainer.translatesAutoresizingMaskIntoConstraints = false
+        viewModeControl.translatesAutoresizingMaskIntoConstraints = false
 
         splitView.isVertical = true
         splitView.dividerStyle = .thin
         splitView.translatesAutoresizingMaskIntoConstraints = false
         splitView.addArrangedSubview(leftPane)
-        splitView.addArrangedSubview(rightScroll)
+        splitView.addArrangedSubview(rightContainer)
 
+        pathBar.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(addressField)
+        root.addSubview(pathBar)
         root.addSubview(terminalButton)
         root.addSubview(splitView)
         root.addSubview(statusLabel)
+        root.addSubview(viewModeControl)
 
         let pad: CGFloat = 8
         let leftWidth = leftPane.widthAnchor.constraint(equalToConstant: 240)
@@ -356,14 +551,26 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
             terminalButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
             terminalButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -pad),
 
+            // The breadcrumb occupies the exact same rect as the editable field;
+            // exactly one of the two is visible at a time.
+            pathBar.topAnchor.constraint(equalTo: addressField.topAnchor),
+            pathBar.bottomAnchor.constraint(equalTo: addressField.bottomAnchor),
+            pathBar.leadingAnchor.constraint(equalTo: addressField.leadingAnchor),
+            pathBar.trailingAnchor.constraint(equalTo: addressField.trailingAnchor),
+
             splitView.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: pad),
             splitView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             splitView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
 
             statusLabel.topAnchor.constraint(equalTo: splitView.bottomAnchor, constant: 4),
             statusLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: pad),
-            statusLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -pad),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: viewModeControl.leadingAnchor, constant: -8),
             statusLabel.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
+
+            // The four-icon view switch sits at the right end of the status bar.
+            viewModeControl.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
+            viewModeControl.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -pad),
+            viewModeControl.heightAnchor.constraint(equalToConstant: 22),
 
             leftWidth,
             leftPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
@@ -500,26 +707,13 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     }
 
     private func makeDetailsTable() -> NSScrollView {
-        let columns: [(id: String, title: String, width: CGFloat)] = [
-            ("name", "Name", 300),
-            ("dateModified", "Date Modified", 170),
-            ("type", "Type", 130),
-            ("size", "Size", 90),
-        ]
-        for spec in columns {
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
-            column.title = spec.title
-            column.width = spec.width
-            column.minWidth = 48
-            tableView.addTableColumn(column)
-        }
+        // Columns themselves are installed by DetailsTableController from the
+        // persisted visible-column set (it owns add/remove + width/order saving).
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         tableView.allowsColumnReordering = true
         tableView.allowsColumnResizing = true
         tableView.allowsMultipleSelection = true
-        tableView.autosaveName = "MacSplorerDetailsTable"
-        tableView.autosaveTableColumns = true
 
         let scroll = NSScrollView()
         scroll.documentView = tableView

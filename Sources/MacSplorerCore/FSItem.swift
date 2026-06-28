@@ -16,14 +16,28 @@ public final class FSItem {
     /// link's *target*, so a symlink to a folder browses and trees like a folder.
     public let isSymlink: Bool
     public let modificationDate: Date?
+    /// Creation date (`.creationDateKey`) — an optional details column.
+    public let creationDate: Date?
+    /// When this item was added to its containing folder (`.addedToDirectoryDateKey`),
+    /// matching Finder's "Date Added" — an optional details column.
+    public let addedToDirectoryDate: Date?
+    /// Last access date (`.contentAccessDateKey`) — an optional "Date Last Opened"
+    /// column. Approximate: the OS updates it on access, not only deliberate opens.
+    public let lastOpenedDate: Date?
     /// File size in bytes; nil for directories (shown blank, like Explorer).
     public let byteSize: Int?
     /// Localized kind, e.g. "Folder", "Plain Text Document", "PNG image".
     public let typeDescription: String?
+    /// A synthetic ".." row pointing at the parent folder (not a real entry on
+    /// disk). Rendered specially, excluded from file operations; opening it just
+    /// navigates up.
+    public let isParentLink: Bool
 
     private static let resourceKeys: [URLResourceKey] = [
         .isDirectoryKey, .isPackageKey, .isSymbolicLinkKey,
-        .contentModificationDateKey, .fileSizeKey, .totalFileAllocatedSizeKey,
+        .contentModificationDateKey, .creationDateKey,
+        .addedToDirectoryDateKey, .contentAccessDateKey,
+        .fileSizeKey, .totalFileAllocatedSizeKey,
         .localizedTypeDescriptionKey, .localizedNameKey,
     ]
 
@@ -75,8 +89,29 @@ public final class FSItem {
         self.isDirectory = directory
         self.isPackage = package
         self.modificationDate = values?.contentModificationDate
+        self.creationDate = values?.creationDate
+        self.addedToDirectoryDate = values?.addedToDirectoryDate
+        self.lastOpenedDate = values?.contentAccessDate
         self.byteSize = directory ? nil : (values?.fileSize ?? values?.totalFileAllocatedSize)
         self.typeDescription = values?.localizedTypeDescription
+        self.isParentLink = false
+    }
+
+    /// A synthetic ".." entry that navigates to `parent`. Carries no metadata and
+    /// is never a file-operation target.
+    public init(parentLinkTo parent: URL) {
+        self.url = parent
+        self.name = ".."
+        self.isDirectory = true
+        self.isPackage = false
+        self.isSymlink = false
+        self.modificationDate = nil
+        self.creationDate = nil
+        self.addedToDirectoryDate = nil
+        self.lastOpenedDate = nil
+        self.byteSize = nil
+        self.typeDescription = nil
+        self.isParentLink = true
     }
 
     /// All entries in a directory (files + folders), unsorted. Returns [] on
