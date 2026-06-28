@@ -267,10 +267,20 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate {
         treeController.onSelect = { [weak self] url in self?.showFolder(url) }
         // Clicking a Favorite jumps there: show it AND expand the tree to it.
         treeController.onSelectFavorite = { [weak self] url in self?.navigate(to: url) }
-        // Tree "New Folder": create it in the details pane, which navigates into
-        // the folder, scrolls the new item into view, selects, and inline-renames.
-        treeController.onNewFolder = { [weak self] url in
-            self?.detailsController.makeNewFolder(in: url)
+        // Tree folder commands route to the details pane, which owns the file-op
+        // implementations — so the left and right folder menus behave identically.
+        treeController.onFolderCommand = { [weak self] command, url in
+            guard let self else { return }
+            switch command {
+            case .cut: self.detailsController.cutFolder(url)
+            case .copy: self.detailsController.copyFolder(url)
+            case .duplicate: self.detailsController.duplicateFolder(url)
+            case .trash: self.detailsController.trashFolder(url)
+            case .rename: self.detailsController.renameFolder(url)
+            case .newFolder: self.detailsController.makeNewFolder(in: url)
+            case .newDocument(let type): self.detailsController.makeNewDocument(type, in: url)
+            case .internetShortcut: self.detailsController.makeInternetShortcut(in: url)
+            }
         }
         detailsController.onOpenFolder = { [weak self] url in self?.navigate(to: url) }
         detailsController.onStatus = { [weak self] status in

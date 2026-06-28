@@ -1,6 +1,15 @@
 import AppKit
 import MacSplorerCore
 
+/// A file-operation the tree's folder context menu delegates to the details pane
+/// (which owns the implementations), so both panes' menus are identical.
+enum FolderCommand {
+    case cut, copy, duplicate, rename, trash
+    case newFolder
+    case newDocument(NewDocumentType)
+    case internetShortcut
+}
+
 /// Drives the left-hand folder tree (`NSOutlineView`): folders only, lazily
 /// expanded, rooted at Home and the startup volume. Reports the selected
 /// folder's URL via `onSelect`.
@@ -15,11 +24,10 @@ final class FolderTreeController: NSObject {
     /// hierarchy below (a true "jump there"), unlike a plain tree click.
     var onSelectFavorite: ((URL) -> Void)?
 
-    /// Called for the tree's "New Folder" command: the coordinator navigates to
-    /// the parent and creates the folder in the details pane, so it scrolls into
-    /// view, gets selected, and drops into inline rename (like the details-pane
-    /// command) instead of being created silently/off-screen.
-    var onNewFolder: ((URL) -> Void)?
+    /// Routes a folder file-operation chosen in the tree's context menu to the
+    /// details pane, which owns the implementations — so the left and right
+    /// folder menus are identical.
+    var onFolderCommand: ((FolderCommand, URL) -> Void)?
 
     /// Whether hidden (dot) folders are shown. Set, then call `refresh`.
     var showHiddenFiles = false
@@ -286,24 +294,37 @@ extension FolderTreeController {
     private func contextMenu(forRow row: Int) -> NSMenu? {
         guard let item = clickedItem(forRow: row) else { return nil } // nil for Favorites header
         clickedFolder = item
-        let isFavorite = isFavoriteItem(item)
         let menu = NSMenu()
         menu.autoenablesItems = false
         add(menu, "Open", #selector(ctxOpen(_:)))
         add(menu, "Open in New Window", #selector(ctxOpenInNewWindow(_:)))
         add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
-        if !isFavorite {
+
+        if isFavoriteItem(item) {
+            // Favorites keep the short menu (they're shortcuts, not the folder).
             menu.addItem(.separator())
-            add(menu, "New Folder", #selector(ctxNewFolder(_:)))
-            add(menu, "Move to Trash", #selector(ctxTrash(_:)))
+            add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
+            add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
+            menu.addItem(.separator())
+            add(menu, "Remove from Favorites", #selector(ctxRemoveFavorite(_:)))
+            return menu
         }
+
+        // Regular folder → the full menu, identical to the details pane's.
+        menu.addItem(NewDocument.submenuItem(for: item.url, target: self,
+                                             action: #selector(ctxNew(_:))))
+        menu.addItem(.separator())
+        add(menu, "Cut", #selector(ctxCut(_:)))
+        add(menu, "Copy", #selector(ctxCopy(_:)))
+        add(menu, "Duplicate", #selector(ctxDuplicate(_:)))
+        menu.addItem(.separator())
+        add(menu, "Rename", #selector(ctxRename(_:)))
+        add(menu, "Move to Trash", #selector(ctxTrash(_:)))
         menu.addItem(.separator())
         add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
         add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
-        menu.addItem(.separator())
-        if isFavorite {
-            add(menu, "Remove from Favorites", #selector(ctxRemoveFavorite(_:)))
-        } else {
+        if !Favorites.shared.contains(item.url) {
+            menu.addItem(.separator())
             add(menu, "Add to Favorites", #selector(ctxAddFavorite(_:)))
         }
         return menu
@@ -341,18 +362,25 @@ extension FolderTreeController {
         Shell.openInTerminal(folder.url)
     }
 
-    @objc private func ctxNewFolder(_ sender: Any?) {
-        guard let folder = clickedFolder else { return }
-        onNewFolder?(folder.url)
+    // File operations route to the details pane (which owns the implementations).
+    @objc private func ctxCut(_ sender: Any?) { sendCommand(.cut) }
+    @objc private func ctxCopy(_ sender: Any?) { sendCommand(.copy) }
+    @objc private func ctxDuplicate(_ sender: Any?) { sendCommand(.duplicate) }
+    @objc private func ctxRename(_ sender: Any?) { sendCommand(.rename) }
+    @objc private func ctxTrash(_ sender: Any?) { sendCommand(.trash) }
+
+    @objc private func ctxNew(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? NewMenuChoice else { return }
+        switch choice.kind {
+        case .folder: onFolderCommand?(.newFolder, choice.directory)
+        case .document(let type): onFolderCommand?(.newDocument(type), choice.directory)
+        case .internetShortcut: onFolderCommand?(.internetShortcut, choice.directory)
+        }
     }
 
-    @objc private func ctxTrash(_ sender: Any?) {
+    private func sendCommand(_ command: FolderCommand) {
         guard let folder = clickedFolder else { return }
-        let parent = folder.url.deletingLastPathComponent()
-        do {
-            try FileOperations.moveToTrash(folder.url)
-            FolderChange.notify([parent])
-        } catch { NSSound.beep() }
+        onFolderCommand?(command, folder.url)
     }
 
     @objc private func ctxReveal(_ sender: Any?) {
