@@ -66,6 +66,18 @@ public enum FileOperations {
         return destination
     }
 
+    /// Create a new file named `name` in `directory` with `contents` (empty by
+    /// default), returning its URL. Uniquifies the name if it collides.
+    @discardableResult
+    public static func newFile(in directory: URL, named name: String,
+                               contents: Data = Data()) throws -> URL {
+        let destination = uniqueDestination(forName: name, in: directory)
+        guard FileManager.default.createFile(atPath: destination.path, contents: contents) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return destination
+    }
+
     /// A non-colliding URL for `name` in `directory`: appends " copy", " copy 2",
     /// … until the path is free, preserving the extension.
     public static func uniqueDestination(forName name: String, in directory: URL) -> URL {

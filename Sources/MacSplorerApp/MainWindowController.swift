@@ -114,6 +114,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         onClose?()
     }
 
+    func windowDidBecomeKey(_ notification: Notification) {
+        // On first activation nothing has focus, so selections render gray. Give
+        // the active tab's tree focus so they're active (blue) immediately. The
+        // guard (firstResponder is the window itself = nothing focused) means we
+        // don't steal focus when you switch back to an already-used window.
+        guard let window, window.firstResponder === window else { return }
+        activePane?.takeInitialFocus()
+    }
+
     /// Drives the tab strip's "+" button on the native window title bar (kept for
     /// the `⌘T` responder path): open a new tab in this window.
     override func newWindowForTab(_ sender: Any?) {
