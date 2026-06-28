@@ -638,10 +638,10 @@ private extension DetailsTableController {
                       multiple: Bool) -> (choice: CollisionChoice, applyToAll: Bool) {
         let alert = NSAlert()
         alert.messageText = "An item named “\(name)” already exists in “\(destination.lastPathComponent)”."
-        alert.informativeText = "Keep both items, replace the existing one, or stop?"
+        alert.informativeText = "Keep both items, replace the existing one, or cancel?"
         alert.addButton(withTitle: "Keep Both")
         alert.addButton(withTitle: "Replace")
-        alert.addButton(withTitle: "Stop")
+        alert.addButton(withTitle: "Cancel")
         var checkbox: NSButton?
         if multiple {
             let box = NSButton(checkboxWithTitle: "Apply to All", target: nil, action: nil)

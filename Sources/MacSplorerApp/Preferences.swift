@@ -39,4 +39,11 @@ final class Preferences {
         get { defaults.double(forKey: "favoritesPaneHeight") }
         set { defaults.set(newValue, forKey: "favoritesPaneHeight") }
     }
+
+    /// When on, bringing any MacSplorer window forward raises all of them
+    /// together. Off by default.
+    var raiseAllWindowsTogether: Bool {
+        get { defaults.bool(forKey: "raiseAllWindowsTogether") }
+        set { defaults.set(newValue, forKey: "raiseAllWindowsTogether") }
+    }
 }

@@ -6,8 +6,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMainMenu()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowBecameKey(_:)),
+            name: NSWindow.didBecomeKeyNotification, object: nil)
         newWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private var isRaisingAll = false
+
+    /// When the "raise all together" preference is on, bringing any one of our
+    /// windows forward pulls the rest forward too. We defer to the next run-loop
+    /// tick — reordering synchronously *inside* the key-change / order-front
+    /// processing reenters and corrupts the stacking (new windows land behind,
+    /// the reorder doesn't take). `arrangeInFront` is the standard "bring all of
+    /// this app's windows forward"; it leaves the key window on top.
+    @objc private func windowBecameKey(_ note: Notification) {
+        guard Preferences.shared.raiseAllWindowsTogether, !isRaisingAll,
+              let keyWindow = note.object as? NSWindow,
+              windowControllers.contains(where: { $0.window === keyWindow }) else { return }
+        isRaisingAll = true
+        DispatchQueue.main.async { [weak self] in
+            NSApp.arrangeInFront(nil)
+            self?.isRaisingAll = false
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -173,6 +195,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         collision.target = self
         viewMenu.addItem(collision)
 
+        let raiseAll = NSMenuItem(title: "Raise All Windows Together",
+                                  action: #selector(toggleRaiseAll(_:)),
+                                  keyEquivalent: "")
+        raiseAll.target = self
+        viewMenu.addItem(raiseAll)
+
         // Window menu — once it's the app's designated windowsMenu, macOS
         // auto-populates it with the open-window list and the tabbing items
         // (Show Tab Bar, Merge All Windows, …) when multiple windows are open.
@@ -217,6 +245,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         Preferences.shared.promptOnCollision.toggle()
     }
 
+    @objc private func toggleRaiseAll(_ sender: Any?) {
+        Preferences.shared.raiseAllWindowsTogether.toggle()
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(toggleHiddenFiles(_:)):
@@ -225,6 +257,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             menuItem.state = Preferences.shared.singleClickToOpen ? .on : .off
         case #selector(togglePromptOnCollision(_:)):
             menuItem.state = Preferences.shared.promptOnCollision ? .on : .off
+        case #selector(toggleRaiseAll(_:)):
+            menuItem.state = Preferences.shared.raiseAllWindowsTogether ? .on : .off
         case #selector(openTerminal(_:)):
             return keyController?.canOpenInTerminal ?? false
         default:
