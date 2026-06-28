@@ -69,4 +69,49 @@ enum NewDocument {
         image.size = NSSize(width: 16, height: 16)
         return image
     }
+
+    /// Build a "New ▸" submenu item that creates items in `directory`. Each entry
+    /// carries a `NewMenuChoice` as its `representedObject`; the caller's
+    /// `target`/`action` performs the creation. Shared by both panes.
+    static func submenuItem(for directory: URL, target: AnyObject, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: "New", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+
+        func add(_ title: String, _ kind: NewMenuChoice.Kind, _ icon: NSImage) -> NSMenuItem {
+            let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            menuItem.target = target
+            menuItem.representedObject = NewMenuChoice(kind, in: directory)
+            icon.size = NSSize(width: 16, height: 16)
+            menuItem.image = icon
+            submenu.addItem(menuItem)
+            return menuItem
+        }
+
+        _ = add("Folder", .folder, NSImage(named: NSImage.folderName) ?? NSImage())
+        submenu.addItem(.separator())
+        for type in types {
+            _ = add(type.title, .document(type), icon(forExtension: type.ext))
+        }
+        submenu.addItem(.separator())
+        let shortcut = add("Internet Shortcut", .internetShortcut, icon(forExtension: "url"))
+        shortcut.isEnabled = clipboardURL() != nil
+        shortcut.toolTip = shortcut.isEnabled ? nil : "Copy a web link to the clipboard first"
+
+        item.submenu = submenu
+        return item
+    }
+}
+
+/// What a "New ▸" submenu item creates, plus the target folder. Carried on each
+/// item's `representedObject`.
+final class NewMenuChoice {
+    enum Kind {
+        case folder
+        case document(NewDocumentType)
+        case internetShortcut
+    }
+    let kind: Kind
+    let directory: URL
+    init(_ kind: Kind, in directory: URL) { self.kind = kind; self.directory = directory }
 }

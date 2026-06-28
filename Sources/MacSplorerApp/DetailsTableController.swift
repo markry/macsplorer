@@ -667,7 +667,10 @@ extension DetailsTableController {
         menu.autoenablesItems = false
         if row < 0 || row >= items.count {
             // Empty space → act on the current folder.
-            if let folder { menu.addItem(newMenuItem(for: folder)) }
+            if let folder {
+                menu.addItem(NewDocument.submenuItem(for: folder, target: self,
+                                                     action: #selector(ctxNew(_:))))
+            }
             add(menu, "Paste", #selector(ctxPaste(_:)), enabled: Clipboard.shared.canPaste)
             menu.addItem(.separator())
             add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
@@ -681,7 +684,8 @@ extension DetailsTableController {
         if isFolder {
             add(menu, "Open in New Window", #selector(ctxOpenInNewWindow(_:)))
             add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
-            menu.addItem(newMenuItem(for: item.url))
+            menu.addItem(NewDocument.submenuItem(for: item.url, target: self,
+                                                 action: #selector(ctxNew(_:))))
         } else {
             let openWith = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
             openWith.submenu = OpenWith.submenu(for: item.url, target: self,
@@ -714,63 +718,42 @@ extension DetailsTableController {
 
     // MARK: New ▸ submenu
 
-    private enum NewKind {
-        case folder
-        case document(NewDocumentType)
-        case internetShortcut
-    }
-    /// Boxed (kind, target folder) carried on each New ▸ item's representedObject.
-    private final class NewAction {
-        let kind: NewKind
-        let directory: URL
-        init(_ kind: NewKind, in directory: URL) { self.kind = kind; self.directory = directory }
-    }
-
-    /// A "New ▸" submenu that creates items in `directory`: Folder, the document
-    /// types, and an Internet Shortcut from the clipboard URL.
-    private func newMenuItem(for directory: URL) -> NSMenuItem {
-        let item = NSMenuItem(title: "New", action: nil, keyEquivalent: "")
-        let submenu = NSMenu()
-        submenu.autoenablesItems = false
-
-        let folderIcon = NSImage(named: NSImage.folderName) ?? NSImage()
-        addNew(submenu, "Folder", NewAction(.folder, in: directory), icon: folderIcon)
-        submenu.addItem(.separator())
-        for type in NewDocument.types {
-            addNew(submenu, type.title, NewAction(.document(type), in: directory),
-                   icon: NewDocument.icon(forExtension: type.ext))
-        }
-        submenu.addItem(.separator())
-        let shortcut = addNew(submenu, "Internet Shortcut",
-                              NewAction(.internetShortcut, in: directory),
-                              icon: NewDocument.icon(forExtension: "url"))
-        shortcut.isEnabled = NewDocument.clipboardURL() != nil
-        shortcut.toolTip = shortcut.isEnabled
-            ? nil : "Copy a web link to the clipboard first"
-
-        item.submenu = submenu
-        return item
-    }
-
-    @discardableResult
-    private func addNew(_ menu: NSMenu, _ title: String, _ action: NewAction,
-                        icon: NSImage) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: #selector(ctxNew(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = action
-        icon.size = NSSize(width: 16, height: 16)
-        item.image = icon
-        menu.addItem(item)
-        return item
-    }
-
     @objc private func ctxNew(_ sender: NSMenuItem) {
-        guard let action = sender.representedObject as? NewAction else { return }
-        switch action.kind {
-        case .folder: makeNewFolder(in: action.directory)
-        case .document(let type): makeNewDocument(type, in: action.directory)
-        case .internetShortcut: makeInternetShortcut(in: action.directory)
+        guard let choice = sender.representedObject as? NewMenuChoice else { return }
+        switch choice.kind {
+        case .folder: makeNewFolder(in: choice.directory)
+        case .document(let type): makeNewDocument(type, in: choice.directory)
+        case .internetShortcut: makeInternetShortcut(in: choice.directory)
         }
+    }
+
+    // MARK: Folder commands by URL (for the tree's context menu to call)
+
+    func cutFolder(_ url: URL) { Clipboard.shared.set([url], operation: .cut) }
+    func copyFolder(_ url: URL) { Clipboard.shared.set([url], operation: .copy) }
+
+    func duplicateFolder(_ url: URL) {
+        let parent = url.deletingLastPathComponent()
+        do {
+            let name = try FileOperations.copy(url, into: parent).lastPathComponent
+            finishMutation(affected: [parent], selecting: samePath(parent, folder) ? [name] : [])
+        } catch { NSSound.beep() }
+    }
+
+    func trashFolder(_ url: URL) {
+        let parent = url.deletingLastPathComponent()
+        do {
+            _ = try FileOperations.moveToTrash(url)
+            finishMutation(affected: [parent])
+        } catch { NSSound.beep() }
+    }
+
+    /// Rename a folder identified by URL: show its parent (so it's visible to
+    /// edit inline), then start the rename.
+    func renameFolder(_ url: URL) {
+        let parent = url.deletingLastPathComponent()
+        if !samePath(parent, folder) { onOpenFolder?(parent) }
+        beginRenameDeferred(named: url.lastPathComponent)
     }
 
     /// Create an empty `untitled.<ext>` file and drop into inline rename.
