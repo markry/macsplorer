@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.4.
+> **Status:** v0.5.
 
 ## Features
 
@@ -48,6 +48,12 @@ expect:
   the tab strip. Click a tab to switch; hover to reveal its close (✕). The strip
   hides itself when only one tab is open. Optionally (**View ▸ Raise All Windows
   Together**) have all windows come forward as a group when you switch to the app.
+- **Window layouts** — save the current arrangement of *all* open windows as a
+  named layout (**View ▸ Save Window Layout…**) and switch back to it any time
+  (**View ▸ Apply Window Layout ▸**) — windows that don't fit the saved layout
+  are closed, missing ones reopened. Absolute screen positions are saved as-is,
+  so make a layout per monitor setup and pick it by name. The app also reopens
+  the *last* arrangement on relaunch, instead of a single OS-centered window.
 
 The one part that goes beyond what Explorer or Finder offer — and is worth
 learning — is the address bar, described next.

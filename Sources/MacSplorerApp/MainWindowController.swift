@@ -116,6 +116,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         onClose?()
     }
 
+    /// Called when this window moves or resizes, so the app can re-snapshot the
+    /// window arrangement (for restore-on-restart).
+    var onFrameChanged: (() -> Void)?
+
+    func windowDidMove(_ notification: Notification) { onFrameChanged?() }
+    func windowDidEndLiveResize(_ notification: Notification) { onFrameChanged?() }
+
     func windowDidBecomeKey(_ notification: Notification) {
         // On first activation nothing has focus, so selections render gray. Give
         // the active tab's tree focus so they're active (blue) immediately. The
