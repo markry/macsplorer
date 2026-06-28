@@ -4,5 +4,5 @@ import Foundation
 /// directory loading, sorting, size/date formatting) will grow under this
 /// target; the UI target depends on it but never the other way around.
 public enum MacSplorer {
-    public static let version = "0.4.0"
+    public static let version = "0.4.1"
 }
