@@ -7,8 +7,10 @@ import MacSplorerCore
 final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private let tabBar = TabBarView()
+    private let menuBar = MenuBarView()
     private let containerView = NSView()
     private var tabBarHeight: NSLayoutConstraint!
+    private var menuBarHeight: NSLayoutConstraint!
 
     private var panes: [BrowserPaneController] = []
     private var titles: [String] = []
@@ -143,17 +145,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func buildLayout() {
         guard let content = window?.contentView else { return }
         tabBar.translatesAutoresizingMaskIntoConstraints = false
+        menuBar.translatesAutoresizingMaskIntoConstraints = false
         containerView.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(tabBar)
+        content.addSubview(menuBar)
         content.addSubview(containerView)
 
+        // The in-window menu bar mirrors the app's top-level menus.
+        menuBar.setMenus(NSApp.mainMenu?.items ?? [])
+
         tabBarHeight = tabBar.heightAnchor.constraint(equalToConstant: TabBarView.height)
+        menuBarHeight = menuBar.heightAnchor.constraint(equalToConstant: MenuBarView.height)
         NSLayoutConstraint.activate([
             tabBar.topAnchor.constraint(equalTo: content.topAnchor),
             tabBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             tabBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             tabBarHeight,
-            containerView.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+
+            menuBar.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            menuBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            menuBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            menuBarHeight,
+
+            containerView.topAnchor.constraint(equalTo: menuBar.bottomAnchor),
             containerView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             containerView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             containerView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
@@ -162,5 +176,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         tabBar.onSelect = { [weak self] index in self?.selectTab(at: index) }
         tabBar.onClose = { [weak self] index in self?.closeTab(at: index) }
         tabBar.onNewTab = { [weak self] in self?.addTab() }
+        applyMenuBarVisibility()
+    }
+
+    /// Show/hide the in-window menu bar per the preference.
+    func applyMenuBarVisibility() {
+        let show = Preferences.shared.showMenuBar
+        menuBar.isHidden = !show
+        menuBarHeight.constant = show ? MenuBarView.height : 0
     }
 }
