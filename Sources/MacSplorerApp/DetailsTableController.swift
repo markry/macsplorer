@@ -76,6 +76,10 @@ final class DetailsTableController: NSObject {
     /// (used after file changes / hidden-files toggle), unlike `show(folder:)`
     /// which is for navigating to a new folder.
     func reload() {
+        // Don't yank the table out from under an in-progress inline rename — e.g.
+        // the directory watcher firing for the folder we just created in would
+        // otherwise reloadData and cancel the edit the instant it began.
+        guard renamingRow < 0 else { return }
         guard let folder else { return }
         let selectedPaths = Set(tableView.selectedRowIndexes.filter { $0 < items.count }
             .map { items[$0].url.standardizedFileURL.path })
@@ -345,19 +349,51 @@ extension DetailsTableController: HoverTableFileActions {
     }
 
     func renameSelectedItem() {
-        beginRename(row: tableView.selectedRow)
+        let row = tableView.selectedRow
+        guard row >= 0, row < items.count else { return }
+        beginRenameDeferred(named: items[row].url.lastPathComponent)
+    }
+
+    /// The reliable way to start an inline rename, used by every trigger (menu,
+    /// keyboard, and post-creation).
+    ///
+    /// We schedule the edit to run **only in the default run-loop mode**. This is
+    /// the crux of the menu flakiness: `DispatchQueue.main.async` is serviced even
+    /// while a context menu's tracking run loop is still active, so the edit
+    /// sometimes tried to start mid-teardown (and silently failed) and sometimes
+    /// after — exactly "sometimes works, sometimes doesn't." `perform(inModes:
+    /// [.default])` waits until the menu has fully closed. (The keyboard path is
+    /// already in default mode, so it was always reliable.)
+    ///
+    /// Inside the block we focus the list (matching the keyboard path's state) and
+    /// re-find the row by name, so a reload in between can't target the wrong row.
+    private func beginRenameDeferred(named name: String) {
+        RunLoop.main.perform(inModes: [.default]) { [weak self] in
+            guard let self,
+                  let row = self.items.firstIndex(where: { $0.url.lastPathComponent == name })
+            else { return }
+            self.tableView.window?.makeFirstResponder(self.tableView)
+            self.beginRename(row: row)
+        }
     }
 
     /// Create a new folder in `directory` (the current folder if nil). When it
     /// lands in the visible folder, select it and start renaming.
     func makeNewFolder(in directory: URL? = nil) {
         guard let target = directory ?? folder else { return }
+        showTargetThenCreate(in: target) {
+            try FileOperations.newFolder(in: target).lastPathComponent
+        }
+    }
+
+    /// Show `target` (navigating into it if it isn't already the visible folder),
+    /// run `create` to make a new item there, then select it and begin inline
+    /// rename. Centralizes the "create something + name it" flow.
+    private func showTargetThenCreate(in target: URL, _ create: () throws -> String) {
+        if !samePath(target, folder) { onOpenFolder?(target) } // make it visible first
         do {
-            let url = try FileOperations.newFolder(in: target)
-            let inCurrent = samePath(target, folder)
-            finishMutation(affected: [target],
-                           selecting: inCurrent ? [url.lastPathComponent] : [],
-                           renameFirst: inCurrent)
+            let name = try create()
+            finishMutation(affected: [target], selecting: [name], renameFirst: true)
         } catch {
             NSSound.beep()
         }
@@ -378,7 +414,7 @@ extension DetailsTableController: HoverTableFileActions {
             .map(\.offset)
         guard !rows.isEmpty else { return }
         tableView.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
-        if renameFirst, let first = rows.first { beginRename(row: first) }
+        if renameFirst, let name = names.first { beginRenameDeferred(named: name) }
     }
 }
 
@@ -389,25 +425,55 @@ extension DetailsTableController: NSTextFieldDelegate {
         guard row >= 0, row < items.count,
               let nameColumn = tableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == "name" })
         else { return }
+        tableView.selectRowIndexes([row], byExtendingSelection: false)
         tableView.scrollRowToVisible(row)
         guard let cell = tableView.view(atColumn: nameColumn, row: row, makeIfNecessary: true) as? NSTableCellView,
               let field = cell.textField else { return }
-        renamingRow = row
         field.isEditable = true
         field.isBordered = true
         field.drawsBackground = true
         field.delegate = self
         field.stringValue = items[row].name // plain text, drop any hover underline
+        renamingRow = row
+        // Start editing through the table (caller has focused it). Fall back to
+        // focusing the field directly, and if neither actually begins editing,
+        // clear `renamingRow` so a failed attempt can't jam future renames.
+        tableView.window?.makeFirstResponder(tableView)
         tableView.editColumn(nameColumn, row: row, with: nil, select: false)
+        if field.currentEditor() == nil {
+            tableView.window?.makeFirstResponder(field)
+        }
+        guard let editor = field.currentEditor() else {
+            renamingRow = -1
+            field.isEditable = false
+            field.isBordered = false
+            field.drawsBackground = false
+            return
+        }
         // Select just the base name (excluding ".ext"), Finder-style, so typing
         // preserves the suffix. Dotfiles / extension-less names select all.
-        if let editor = field.currentEditor() {
-            let nsName = items[row].name as NSString
-            let baseLength = (nsName.deletingPathExtension as NSString).length
-            editor.selectedRange = (baseLength > 0 && baseLength < nsName.length)
-                ? NSRange(location: 0, length: baseLength)
-                : NSRange(location: 0, length: nsName.length)
+        let nsName = items[row].name as NSString
+        let baseLength = (nsName.deletingPathExtension as NSString).length
+        editor.selectedRange = (baseLength > 0 && baseLength < nsName.length)
+            ? NSRange(location: 0, length: baseLength)
+            : NSRange(location: 0, length: nsName.length)
+    }
+
+    /// Esc cancels the rename cleanly. The default field-editor abort wasn't
+    /// reliably restoring the cell, so handle it: mark it canceled (so
+    /// `controlTextDidEndEditing` no-ops), abort the editor, and reload on the
+    /// next tick to drop the edit appearance.
+    func control(_ control: NSControl, textView: NSTextView,
+                 doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        renamingRow = -1
+        control.abortEditing()
+        let tv = tableView
+        DispatchQueue.main.async { [weak self] in
+            self?.reload()
+            tv.window?.makeFirstResponder(tv)  // keep the list focused (blue, arrows work)
         }
+        return true
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
@@ -418,17 +484,22 @@ extension DetailsTableController: NSTextFieldDelegate {
         let movement = (obj.userInfo?["NSTextMovement"] as? Int) ?? 0
         let canceled = movement == NSTextMovement.cancel.rawValue
         let newName = (obj.object as? NSTextField)?.stringValue ?? item.name
+        var renamed = false
         if !canceled, newName.trimmingCharacters(in: .whitespacesAndNewlines) != item.name {
             do {
                 let dest = try FileOperations.rename(item.url, to: newName)
                 finishMutation(affected: [item.url.deletingLastPathComponent()],
                                selecting: [dest.lastPathComponent])
-                return
+                renamed = true
             } catch {
                 NSSound.beep()
             }
         }
-        reload() // restore label appearance / original name
+        if !renamed { reload() } // restore label appearance / original name
+        // Return focus to the list so the selection stays active (blue) and
+        // arrow/Return keys keep working after the edit.
+        let tv = tableView
+        DispatchQueue.main.async { tv.window?.makeFirstResponder(tv) }
     }
 }
 
@@ -596,7 +667,7 @@ extension DetailsTableController {
         menu.autoenablesItems = false
         if row < 0 || row >= items.count {
             // Empty space → act on the current folder.
-            add(menu, "New Folder", #selector(ctxNewFolderHere(_:)))
+            if let folder { menu.addItem(newMenuItem(for: folder)) }
             add(menu, "Paste", #selector(ctxPaste(_:)), enabled: Clipboard.shared.canPaste)
             menu.addItem(.separator())
             add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
@@ -610,7 +681,7 @@ extension DetailsTableController {
         if isFolder {
             add(menu, "Open in New Window", #selector(ctxOpenInNewWindow(_:)))
             add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
-            add(menu, "New Folder", #selector(ctxNewFolderInClicked(_:)))
+            menu.addItem(newMenuItem(for: item.url))
         } else {
             let openWith = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
             openWith.submenu = OpenWith.submenu(for: item.url, target: self,
@@ -627,6 +698,10 @@ extension DetailsTableController {
         menu.addItem(.separator())
         add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
         add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
+        if isFolder, !Favorites.shared.contains(item.url) {
+            menu.addItem(.separator())
+            add(menu, "Add to Favorites", #selector(ctxAddFavorite(_:)))
+        }
         return menu
     }
 
@@ -635,6 +710,87 @@ extension DetailsTableController {
         menuItem.target = self
         menuItem.isEnabled = enabled
         menu.addItem(menuItem)
+    }
+
+    // MARK: New ▸ submenu
+
+    private enum NewKind {
+        case folder
+        case document(NewDocumentType)
+        case internetShortcut
+    }
+    /// Boxed (kind, target folder) carried on each New ▸ item's representedObject.
+    private final class NewAction {
+        let kind: NewKind
+        let directory: URL
+        init(_ kind: NewKind, in directory: URL) { self.kind = kind; self.directory = directory }
+    }
+
+    /// A "New ▸" submenu that creates items in `directory`: Folder, the document
+    /// types, and an Internet Shortcut from the clipboard URL.
+    private func newMenuItem(for directory: URL) -> NSMenuItem {
+        let item = NSMenuItem(title: "New", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+
+        let folderIcon = NSImage(named: NSImage.folderName) ?? NSImage()
+        addNew(submenu, "Folder", NewAction(.folder, in: directory), icon: folderIcon)
+        submenu.addItem(.separator())
+        for type in NewDocument.types {
+            addNew(submenu, type.title, NewAction(.document(type), in: directory),
+                   icon: NewDocument.icon(forExtension: type.ext))
+        }
+        submenu.addItem(.separator())
+        let shortcut = addNew(submenu, "Internet Shortcut",
+                              NewAction(.internetShortcut, in: directory),
+                              icon: NewDocument.icon(forExtension: "url"))
+        shortcut.isEnabled = NewDocument.clipboardURL() != nil
+        shortcut.toolTip = shortcut.isEnabled
+            ? nil : "Copy a web link to the clipboard first"
+
+        item.submenu = submenu
+        return item
+    }
+
+    @discardableResult
+    private func addNew(_ menu: NSMenu, _ title: String, _ action: NewAction,
+                        icon: NSImage) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(ctxNew(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = action
+        icon.size = NSSize(width: 16, height: 16)
+        item.image = icon
+        menu.addItem(item)
+        return item
+    }
+
+    @objc private func ctxNew(_ sender: NSMenuItem) {
+        guard let action = sender.representedObject as? NewAction else { return }
+        switch action.kind {
+        case .folder: makeNewFolder(in: action.directory)
+        case .document(let type): makeNewDocument(type, in: action.directory)
+        case .internetShortcut: makeInternetShortcut(in: action.directory)
+        }
+    }
+
+    /// Create an empty `untitled.<ext>` file and drop into inline rename.
+    func makeNewDocument(_ type: NewDocumentType, in directory: URL? = nil) {
+        guard let target = directory ?? folder else { return }
+        showTargetThenCreate(in: target) {
+            try FileOperations.newFile(
+                in: target, named: "\(NewDocument.defaultBaseName).\(type.ext)").lastPathComponent
+        }
+    }
+
+    /// Write the clipboard URL as a cross-platform `.url` Internet Shortcut.
+    func makeInternetShortcut(in directory: URL? = nil) {
+        guard let target = directory ?? folder,
+              let urlString = NewDocument.clipboardURL() else { NSSound.beep(); return }
+        showTargetThenCreate(in: target) {
+            let data = NewDocument.internetShortcutData(for: urlString)
+            return try FileOperations.newFile(
+                in: target, named: "\(NewDocument.defaultBaseName).url", contents: data).lastPathComponent
+        }
     }
 
     @objc private func ctxOpen(_ sender: Any?) { openSelected() }
@@ -647,9 +803,8 @@ extension DetailsTableController {
     @objc private func ctxReveal(_ sender: Any?) { revealSelection() }
     @objc private func ctxCopyPath(_ sender: Any?) { copySelectionPaths() }
     @objc private func ctxTerminal(_ sender: Any?) { openSelectionInTerminal() }
-    @objc private func ctxNewFolderHere(_ sender: Any?) { makeNewFolder() }
-    @objc private func ctxNewFolderInClicked(_ sender: Any?) {
-        if let url = singleSelectedFolderURL() { makeNewFolder(in: url) }
+    @objc private func ctxAddFavorite(_ sender: Any?) {
+        if let url = singleSelectedFolderURL() { Favorites.shared.add(url) }
     }
     @objc private func ctxOpenInNewWindow(_ sender: Any?) {
         if let url = singleSelectedFolderURL() {

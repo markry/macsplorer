@@ -59,6 +59,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate {
         if addressFieldEditor == nil {
             let editor = AddressFieldEditor()
             editor.isFieldEditor = true
+            editor.allowsUndo = true  // enable ⌘Z / ⌘⇧Z in the FAB
             editor.onCommit = { [weak self] movement in
                 guard movement == NSTextMovement.return.rawValue
                     || movement == NSTextMovement.tab.rawValue else { return }
@@ -73,6 +74,13 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate {
     /// Put keyboard focus in the address field (used when a new tab opens).
     func focusAddressField() {
         view.window?.makeFirstResponder(addressField)
+    }
+
+    /// Give the folder tree keyboard focus so its selection renders active
+    /// (blue) and arrow keys work — used when the window first opens, otherwise
+    /// everything shows the gray, unfocused selection until you click.
+    func takeInitialFocus() {
+        view.window?.makeFirstResponder(outlineView)
     }
 
     // MARK: - Navigation
@@ -257,6 +265,13 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate {
         // re-reveal, which would loop). Double-click in details: navigate +
         // reveal so the tree follows.
         treeController.onSelect = { [weak self] url in self?.showFolder(url) }
+        // Clicking a Favorite jumps there: show it AND expand the tree to it.
+        treeController.onSelectFavorite = { [weak self] url in self?.navigate(to: url) }
+        // Tree "New Folder": create it in the details pane, which navigates into
+        // the folder, scrolls the new item into view, selects, and inline-renames.
+        treeController.onNewFolder = { [weak self] url in
+            self?.detailsController.makeNewFolder(in: url)
+        }
         detailsController.onOpenFolder = { [weak self] url in self?.navigate(to: url) }
         detailsController.onStatus = { [weak self] status in
             self?.statusLabel.stringValue = status

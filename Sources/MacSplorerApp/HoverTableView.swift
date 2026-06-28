@@ -66,6 +66,11 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
         guard hoverEnabled else { return }
+        // While a cell is being edited (inline rename), do nothing on hover: the
+        // per-cell reload that draws the hover underline would destroy the active
+        // field editor (this is what made menu-triggered renames die the instant
+        // the mouse moved, while keyboard renames — no movement — survived).
+        if window?.firstResponder is NSText { return }
         let row = row(at: convert(event.locationInWindow, from: nil))
         setHoveredRow(row)          // underline tracks the pointer immediately
         scheduleSelectionDwell(row) // selection waits for the pointer to settle
@@ -93,6 +98,11 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
     private func commitSelection(_ row: Int) {
         dwellTimer?.invalidate()
         dwellTimer = nil
+        // Never change the selection while a cell is being edited (inline rename):
+        // a selection change ends the field-editor session the instant it starts.
+        // The field editor is an NSText, so its presence as first responder means
+        // "editing in progress."
+        if window?.firstResponder is NSText { return }
         guard hoverEnabled, hoveredRow == row, row >= 0, row < numberOfRows else { return }
         let modifiers = NSEvent.modifierFlags
         if modifiers.contains(.shift) {
@@ -108,6 +118,13 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
             selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             selectionAnchor = row
         }
+        // A hover-commit should *focus* the list so the selection is active
+        // (blue) and the keyboard (Return to rename, arrows) works — without
+        // yanking focus out of an active text edit (the address bar / an inline
+        // rename), whose field editor is an NSText.
+        if let window, !(window.firstResponder is NSText), window.firstResponder !== self {
+            window.makeFirstResponder(self)
+        }
     }
 
     private func cancelDwell() {
@@ -120,6 +137,9 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
     /// follows the mouse (cheap: one column, at most two rows).
     private func setHoveredRow(_ newRow: Int) {
         guard newRow != hoveredRow else { return }
+        // Never reload cells while editing — it would tear down the field editor.
+        // (Covers the mouseExited path too.)
+        if window?.firstResponder is NSText { return }
         let previous = hoveredRow
         hoveredRow = newRow
         guard let nameColumn = tableColumns.firstIndex(where: { $0.identifier.rawValue == "name" })
