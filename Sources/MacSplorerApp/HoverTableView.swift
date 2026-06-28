@@ -163,8 +163,11 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if (event.keyCode == 36 || event.keyCode == 76), modifiers.isEmpty {
             fileActions?.renameSelectedItem()        // Return / keypad Enter
-        } else if event.keyCode == 51, modifiers == .command {
-            fileActions?.trashSelectedItems()         // ⌘⌫
+        } else if (event.keyCode == 51 || event.keyCode == 117),
+                  modifiers.isEmpty || modifiers == .command {
+            // Delete (⌫) / Forward-Delete, with or without ⌘ → Trash the
+            // selection (Explorer-style, plus the Mac ⌘⌫ convention).
+            fileActions?.trashSelectedItems()
         } else if event.keyCode == 49, modifiers.isEmpty {
             toggleQuickLook()                         // Space
         } else {
