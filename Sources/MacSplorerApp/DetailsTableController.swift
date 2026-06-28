@@ -1,37 +1,25 @@
 import AppKit
 import MacSplorerCore
 
-/// Drives the right-hand details table (`NSTableView`): the contents of one
-/// folder shown as Name / Date Modified / Type / Size, sortable by column, with
-/// file icons. Double-click opens files (default app) or navigates into folders.
-final class DetailsTableController: NSObject {
+/// Presents a `FolderContents` as the details table (`NSTableView`): configurable
+/// columns (Name / dates / Type / Size), sortable, with file icons and inline
+/// rename. The model + all file-operation logic lives in `FolderContents`; this
+/// class is the table-specific view layer.
+final class DetailsTableController: NSObject, FolderContentsPresenter {
     private let tableView: HoverTableView
-    private(set) var folder: URL?
-    private var items: [FSItem] = []
-
-    /// User opened a folder (double-click) — coordinator should navigate to it.
-    var onOpenFolder: ((URL) -> Void)?
-    /// Fresh status-bar text (item / selection counts).
-    var onStatus: ((String) -> Void)?
+    private let contents: FolderContents
 
     private var renamingRow = -1
-    private let watcher = DirectoryWatcher()
 
-    /// Packages whose aggregate-size computation is in flight, to avoid
-    /// scheduling the same walk twice.
-    private var pendingSizeChecks = Set<ObjectIdentifier>()
-
-    /// Whether hidden (dot) files are shown. Set, then call `reload`.
-    var showHiddenFiles = false
-
-    /// When true, a plain single click opens (web-style) and rows underline on
-    /// hover; ⇧/⌘ clicks still just adjust the selection.
+    /// Mirrors the open-on-single-click preference: drives hover underlining here
+    /// and is read by the click handlers below.
     var singleClickToOpen = false {
         didSet { tableView.hoverEnabled = singleClickToOpen }
     }
 
-    init(tableView: HoverTableView) {
+    init(tableView: HoverTableView, contents: FolderContents) {
         self.tableView = tableView
+        self.contents = contents
         super.init()
         tableView.dataSource = self
         tableView.delegate = self
@@ -42,102 +30,146 @@ final class DetailsTableController: NSObject {
         tableView.registerForDraggedTypes([.fileURL])
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
-        configureSorting()
+        let header = ResizingHeaderView()
+        header.onDoubleClickRightEdge = { [weak self] column in self?.sizeColumnToFit(column) }
+        tableView.headerView = header
+        rebuildColumns()
         NotificationCenter.default.addObserver(
-            self, selector: #selector(folderDidChange(_:)),
-            name: FolderChange.didChange, object: nil)
-        // Live-refresh on external changes (Finder deletes, finished downloads…).
-        watcher.onChange = { [weak self] in self?.reload() }
+            self, selector: #selector(columnGeometryChanged(_:)),
+            name: NSTableView.columnDidResizeNotification, object: tableView)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(columnGeometryChanged(_:)),
+            name: NSTableView.columnDidMoveNotification, object: tableView)
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    /// Re-list when a file operation (in this or another window) changed the
-    /// folder we're showing.
-    @objc private func folderDidChange(_ note: Notification) {
-        guard let folder else { return }
-        let path = folder.standardizedFileURL.path
-        if FolderChange.folders(from: note).contains(where: { $0.path == path }) {
-            reload()
-        }
+    // MARK: FolderContentsPresenter
+
+    var selectedIndexes: IndexSet { tableView.selectedRowIndexes }
+
+    func selectItems(at indexes: IndexSet) {
+        tableView.selectRowIndexes(indexes, byExtendingSelection: false)
     }
 
-    func show(folder url: URL) {
-        folder = url
-        watcher.watch(url)
-        items = FSItem.contents(of: url, includeHidden: showHiddenFiles)
-        sortItems()
+    func reloadContents() { tableView.reloadData() }
+
+    func reloadItem(at index: Int) {
+        guard index < tableView.numberOfRows, tableView.numberOfColumns > 0 else { return }
+        tableView.reloadData(forRowIndexes: IndexSet(integer: index),
+                             columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns))
+    }
+
+    func scrollToTop() { if tableView.numberOfRows > 0 { tableView.scrollRowToVisible(0) } }
+
+    /// Called when this view becomes the active presenter, or preferences change.
+    func activate() {
+        contents.presenter = self
+        tableView.hoverEnabled = singleClickToOpen
+        // Keep the header's sort arrow in sync with the model's sort.
+        tableView.sortDescriptors = [NSSortDescriptor(key: contents.sortKey,
+                                                       ascending: contents.sortAscending)]
         tableView.reloadData()
-        if !items.isEmpty { tableView.scrollRowToVisible(0) }
-        emitStatus()
     }
 
-    /// Re-list the current folder in place, preserving the selection by path
-    /// (used after file changes / hidden-files toggle), unlike `show(folder:)`
-    /// which is for navigating to a new folder.
-    func reload() {
-        // Don't yank the table out from under an in-progress inline rename — e.g.
-        // the directory watcher firing for the folder we just created in would
-        // otherwise reloadData and cancel the edit the instant it began.
-        guard renamingRow < 0 else { return }
-        guard let folder else { return }
-        let selectedPaths = Set(tableView.selectedRowIndexes.filter { $0 < items.count }
-            .map { items[$0].url.standardizedFileURL.path })
-        items = FSItem.contents(of: folder, includeHidden: showHiddenFiles)
-        sortItems()
-        tableView.reloadData()
-        if !selectedPaths.isEmpty {
-            let rows = items.enumerated()
-                .filter { selectedPaths.contains($0.element.url.standardizedFileURL.path) }
-                .map(\.offset)
-            if !rows.isEmpty {
-                tableView.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
-            }
+    // MARK: Columns
+
+    /// (Re)build columns from `Preferences.detailsColumns`, restoring saved widths
+    /// and preserving the active sort where possible.
+    func rebuildColumns() {
+        persistColumnGeometry()
+        let priorSort = tableView.sortDescriptors.first
+        for column in tableView.tableColumns { tableView.removeTableColumn(column) }
+
+        let widths = Preferences.shared.detailsColumnWidths
+        for id in Preferences.shared.detailsColumns {
+            guard let spec = DetailsColumnSpec.spec(id: id) else { continue }
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
+            column.title = spec.title
+            column.minWidth = spec.minWidth
+            column.width = widths[id].map { CGFloat($0) } ?? spec.defaultWidth
+            column.sortDescriptorPrototype = NSSortDescriptor(key: id, ascending: true)
+            tableView.addTableColumn(column)
         }
-        emitStatus()
+        tableView.headerView?.menu = headerMenu
+
+        if let priorSort,
+           tableView.tableColumns.contains(where: { $0.identifier.rawValue == priorSort.key }) {
+            tableView.sortDescriptors = [priorSort]
+        } else {
+            tableView.sortDescriptors = [NSSortDescriptor(key: contents.sortKey,
+                                                          ascending: contents.sortAscending)]
+        }
+        tableView.reloadData()
     }
 
-    // MARK: Sorting
+    private var fixingColumnOrder = false
 
-    private func configureSorting() {
+    @objc private func columnGeometryChanged(_ note: Notification) {
+        persistColumnGeometry()
+        guard note.name == NSTableView.columnDidMoveNotification, !fixingColumnOrder else { return }
+        // Columns reorder freely by dragging the header; we only insist that Name
+        // stays first — if a drag displaced it, slide it back to slot 0.
+        if let nameIndex = tableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == "name" }),
+           nameIndex != 0 {
+            fixingColumnOrder = true
+            tableView.moveColumn(nameIndex, toColumn: 0)
+            fixingColumnOrder = false
+        }
+        Preferences.shared.detailsColumns = tableView.tableColumns.map { $0.identifier.rawValue }
+    }
+
+    private func persistColumnGeometry() {
+        guard !tableView.tableColumns.isEmpty else { return }
+        var widths = Preferences.shared.detailsColumnWidths
         for column in tableView.tableColumns {
-            column.sortDescriptorPrototype =
-                NSSortDescriptor(key: column.identifier.rawValue, ascending: true)
+            widths[column.identifier.rawValue] = Double(column.width)
         }
-        tableView.sortDescriptors = [NSSortDescriptor(key: "name", ascending: true)]
+        Preferences.shared.detailsColumnWidths = widths
     }
 
-    private func sortItems() {
-        guard let sort = tableView.sortDescriptors.first else { return }
-        let key = sort.key ?? "name"
-        items.sort { a, b in
-            // Folders always group before files, regardless of column/direction.
-            if a.isDirectory != b.isDirectory { return a.isDirectory }
-            var result = Self.order(a, b, key: key)
-            if result == .orderedSame {
-                result = a.name.localizedStandardCompare(b.name)
-            }
-            if !sort.ascending { result = result.reversed }
-            return result == .orderedAscending
-        }
+    private lazy var headerMenu: NSMenu = {
+        let menu = NSMenu()
+        menu.delegate = self
+        return menu
+    }()
+
+    @objc private func toggleHeaderColumn(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        (NSApp.delegate as? AppDelegate)?.toggleDetailsColumn(id)
     }
 
-    private static func order(_ a: FSItem, _ b: FSItem, key: String) -> ComparisonResult {
-        switch key {
-        case "dateModified": return compareOptional(a.modificationDate, b.modificationDate)
-        case "size":         return compareOptional(a.displayByteSize, b.displayByteSize)
-        case "type":         return (a.typeDescription ?? "")
-                                    .localizedStandardCompare(b.typeDescription ?? "")
-        default:             return a.name.localizedStandardCompare(b.name)
+    /// Grow/shrink a column to just fit its widest cell (double-click its right
+    /// divider, spreadsheet-style). Measures every row's text in that column.
+    func sizeColumnToFit(_ columnIndex: Int) {
+        guard tableView.tableColumns.indices.contains(columnIndex) else { return }
+        let column = tableView.tableColumns[columnIndex]
+        let id = column.identifier.rawValue
+        let cellFont = NSFont.systemFont(ofSize: 13)
+        var maxWidth = (column.title as NSString)
+            .size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold)]).width + 16
+        for item in contents.items {
+            var width = (cellText(for: item, columnId: id) as NSString)
+                .size(withAttributes: [.font: cellFont]).width
+            if id == "name" { width += 22 }   // file icon (16) + leading/gap
+            maxWidth = max(maxWidth, width)
         }
+        column.width = min(max(ceil(maxWidth) + 12, column.minWidth), 1200)
+        persistColumnGeometry()
     }
 
-    private static func compareOptional<T: Comparable>(_ a: T?, _ b: T?) -> ComparisonResult {
-        switch (a, b) {
-        case let (x?, y?): return x < y ? .orderedAscending : (x > y ? .orderedDescending : .orderedSame)
-        case (nil, nil):   return .orderedSame
-        case (nil, _):     return .orderedAscending
-        case (_, nil):     return .orderedDescending
+    /// The plain text a column shows for an item — shared by the cells and the
+    /// fit-to-content measurement so they always agree.
+    private func cellText(for item: FSItem, columnId: String) -> String {
+        switch columnId {
+        case "name":           return item.name
+        case "dateModified":   return FSFormat.date(item.modificationDate)
+        case "dateCreated":    return FSFormat.date(item.creationDate)
+        case "dateAdded":      return FSFormat.date(item.addedToDirectoryDate)
+        case "dateLastOpened": return FSFormat.date(item.lastOpenedDate)
+        case "type":           return item.typeDescription ?? (item.isDirectory ? "Folder" : "")
+        case "size":           return item.needsPackageSize ? "" : FSFormat.size(item.displayByteSize)
+        default:               return ""
         }
     }
 
@@ -149,9 +181,6 @@ final class DetailsTableController: NSObject {
 
         let text = NSTextField(labelWithString: "")
         text.translatesAutoresizingMaskIntoConstraints = false
-        // Single-line keeps row heights uniform — no wrapping/shifting on hover.
-        // Names truncate in the middle so the tail + extension stay visible
-        // (Finder style); other columns truncate at the tail.
         text.usesSingleLineMode = true
         text.maximumNumberOfLines = 1
         text.lineBreakMode = (id.rawValue == "name") ? .byTruncatingMiddle : .byTruncatingTail
@@ -183,99 +212,52 @@ final class DetailsTableController: NSObject {
         return cell
     }
 
-    // MARK: Actions
+    // MARK: Click actions
 
     @objc private func handleDoubleClick() {
-        let row = tableView.clickedRow
-        guard row >= 0, row < items.count else { return }
-        openItem(items[row])
+        contents.openItem(at: tableView.clickedRow)
     }
 
-    /// Single click: open only in single-click mode, and only for a plain click
-    /// — ⇧/⌘ clicks are selection gestures, so let the table handle those.
     @objc private func handleSingleClick() {
         guard singleClickToOpen else { return }
         let modifiers = NSApp.currentEvent?.modifierFlags ?? []
         if modifiers.contains(.shift) || modifiers.contains(.command) { return }
-        let row = tableView.clickedRow
-        guard row >= 0, row < items.count else { return }
-        openItem(items[row])
+        contents.openItem(at: tableView.clickedRow)
     }
 
-    /// Open the current selection (⌘O / File ▸ Open): a folder navigates in,
-    /// files launch in their default apps.
-    func openSelected() {
-        let rows = tableView.selectedRowIndexes.filter { $0 < items.count }
-        guard !rows.isEmpty else { return }
-        for row in rows { openItem(items[row]) }
-    }
-
-    private func openItem(_ item: FSItem) {
-        if item.isDirectory && !item.isPackage {
-            onOpenFolder?(item.url)
-        } else {
-            NSWorkspace.shared.open(item.url)
-        }
-    }
-
-    private func emitStatus() {
-        let count = items.count
-        let selection = tableView.selectedRowIndexes
-        if selection.isEmpty {
-            onStatus?("\(count) item\(count == 1 ? "" : "s")")
-        } else if selection.count == 1, let row = selection.first {
-            let item = items[row]
-            // Plain folders show no size; files and packages do.
-            let showSize = !item.isDirectory || item.isPackage
-            let size = showSize ? " · \(FSFormat.size(item.displayByteSize))" : ""
-            onStatus?("\(count) items · 1 selected\(size)")
-        } else {
-            let total = selection.reduce(0) { $0 + (items[$1].displayByteSize ?? 0) }
-            onStatus?("\(count) items · \(selection.count) selected · \(FSFormat.size(total))")
-        }
-    }
-
-    /// Compute a package's aggregate size off the main thread, then fill in just
-    /// that row's size cell. Mirrors the tree's background subfolder probe.
-    private func scheduleSizeCheck(for item: FSItem) {
-        let key = ObjectIdentifier(item)
-        guard !pendingSizeChecks.contains(key) else { return }
-        pendingSizeChecks.insert(key)
-        let url = item.url
-        DispatchQueue.global(qos: .utility).async {
-            let size = FSItem.directoryTotalSize(at: url)
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.pendingSizeChecks.remove(key)
-                item.setPackageSize(size)
-                guard let row = self.items.firstIndex(where: { $0 === item }) else { return }
-                let col = self.tableView.column(withIdentifier: NSUserInterfaceItemIdentifier("size"))
-                guard col >= 0 else { return }
-                self.tableView.reloadData(forRowIndexes: IndexSet(integer: row),
-                                          columnIndexes: IndexSet(integer: col))
-            }
-        }
-    }
+    // Host-facing command kept for the responder path.
+    func openSelected() { contents.openSelected() }
 }
 
+// MARK: - Table data source / delegate
+
 extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { contents.items.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard let column = tableColumn, row < items.count else { return nil }
-        let item = items[row]
+        guard let column = tableColumn, let item = contents.item(at: row) else { return nil }
         let cell = tableView.makeView(withIdentifier: column.identifier, owner: self) as? NSTableCellView
             ?? makeCell(for: column.identifier)
+        if item.isParentLink {
+            if column.identifier.rawValue == "name" {
+                cell.imageView?.image = NSImage(systemSymbolName: "arrow.turn.up.left",
+                                                accessibilityDescription: "Parent folder")
+                cell.textField?.isEditable = false
+                cell.textField?.isBordered = false
+                cell.textField?.drawsBackground = false
+                cell.textField?.stringValue = ".."
+            } else {
+                cell.textField?.stringValue = ""
+            }
+            return cell
+        }
         switch column.identifier.rawValue {
         case "name":
             cell.imageView?.image = NSWorkspace.shared.icon(forFile: item.url.path)
-            // Reset any edit-mode appearance left on a reused cell.
             cell.textField?.isEditable = false
             cell.textField?.isBordered = false
             cell.textField?.drawsBackground = false
             if self.tableView.hoverEnabled && self.tableView.hoveredRow == row {
-                // Carry the single-line middle-truncation through the attributed
-                // (underlined) string too, so hovering can't make a name wrap.
                 let paragraph = NSMutableParagraphStyle()
                 paragraph.lineBreakMode = .byTruncatingMiddle
                 cell.textField?.attributedStringValue = NSAttributedString(
@@ -287,12 +269,18 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
             }
         case "dateModified":
             cell.textField?.stringValue = FSFormat.date(item.modificationDate)
+        case "dateCreated":
+            cell.textField?.stringValue = FSFormat.date(item.creationDate)
+        case "dateAdded":
+            cell.textField?.stringValue = FSFormat.date(item.addedToDirectoryDate)
+        case "dateLastOpened":
+            cell.textField?.stringValue = FSFormat.date(item.lastOpenedDate)
         case "type":
             cell.textField?.stringValue = item.typeDescription ?? (item.isDirectory ? "Folder" : "")
         case "size":
             if item.needsPackageSize {
-                cell.textField?.stringValue = ""   // fill in once computed
-                scheduleSizeCheck(for: item)
+                cell.textField?.stringValue = ""
+                contents.scheduleSizeCheck(for: item)
             } else {
                 cell.textField?.stringValue = FSFormat.size(item.displayByteSize)
             }
@@ -303,201 +291,117 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
-        sortItems()
-        tableView.reloadData()
+        guard let sort = tableView.sortDescriptors.first else { return }
+        contents.setSort(key: sort.key ?? "name", ascending: sort.ascending)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        emitStatus()
+        contents.emitStatus()
     }
 }
 
-// MARK: - File-operation commands
+// MARK: - Header column-picker menu
+
+extension DetailsTableController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === headerMenu else { return }
+        menu.removeAllItems()
+        let visible = Set(Preferences.shared.detailsColumns)
+        for spec in DetailsColumnSpec.toggleable {
+            let item = NSMenuItem(title: spec.title,
+                                  action: #selector(toggleHeaderColumn(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = spec.id
+            item.state = visible.contains(spec.id) ? .on : .off
+            menu.addItem(item)
+        }
+    }
+}
+
+// MARK: - File-operation commands (responder chain → FolderContents)
 
 extension DetailsTableController: HoverTableFileActions {
-    var hasSelection: Bool { !tableView.selectedRowIndexes.isEmpty }
-    var canPaste: Bool { Clipboard.shared.canPaste }
-    var selectedFileURLs: [URL] { selectedItemURLs() }
+    var hasSelection: Bool { contents.hasSelection }
+    var canPaste: Bool { contents.canPaste }
+    var selectedFileURLs: [URL] { contents.selectedFileURLs }
 
-    func copySelectedItems() {
-        let urls = selectedURLs()
-        guard !urls.isEmpty else { return }
-        Clipboard.shared.set(urls, operation: .copy)
-    }
+    func copySelectedItems() { contents.copySelectedItems() }
+    func cutSelectedItems() { contents.cutSelectedItems() }
+    func pasteIntoFolder() { contents.pasteIntoFolder() }
+    func trashSelectedItems() { contents.trashSelectedItems() }
+    func duplicateSelectedItems() { contents.duplicateSelectedItems() }
+    func renameSelectedItem() { contents.renameSelectedItem() }
 
-    func cutSelectedItems() {
-        let urls = selectedURLs()
-        guard !urls.isEmpty else { return }
-        Clipboard.shared.set(urls, operation: .cut)
-    }
-
-    func pasteIntoFolder() {
-        guard let folder else { return }
-        let (urls, move) = Clipboard.shared.pasteSource()
-        guard !urls.isEmpty else { return }
-        performTransfer(urls, into: folder, move: move, selectLanded: true)
-        if move { Clipboard.shared.clearAfterMove() }
-    }
-
-    func trashSelectedItems() {
-        let urls = selectedURLs()
-        guard !urls.isEmpty, let folder else { return }
-        for url in urls {
-            do { _ = try FileOperations.moveToTrash(url) } catch { NSSound.beep() }
-        }
-        finishMutation(affected: [folder])
-    }
-
-    func renameSelectedItem() {
-        let row = tableView.selectedRow
-        guard row >= 0, row < items.count else { return }
-        beginRenameDeferred(named: items[row].url.lastPathComponent)
-    }
-
-    /// The reliable way to start an inline rename, used by every trigger (menu,
-    /// keyboard, and post-creation).
-    ///
-    /// We schedule the edit to run **only in the default run-loop mode**. This is
-    /// the crux of the menu flakiness: `DispatchQueue.main.async` is serviced even
-    /// while a context menu's tracking run loop is still active, so the edit
-    /// sometimes tried to start mid-teardown (and silently failed) and sometimes
-    /// after — exactly "sometimes works, sometimes doesn't." `perform(inModes:
-    /// [.default])` waits until the menu has fully closed. (The keyboard path is
-    /// already in default mode, so it was always reliable.)
-    ///
-    /// Inside the block we focus the list (matching the keyboard path's state) and
-    /// re-find the row by name, so a reload in between can't target the wrong row.
-    private func beginRenameDeferred(named name: String) {
-        RunLoop.main.perform(inModes: [.default]) { [weak self] in
-            guard let self,
-                  let row = self.items.firstIndex(where: { $0.url.lastPathComponent == name })
-            else { return }
-            self.tableView.window?.makeFirstResponder(self.tableView)
-            self.beginRename(row: row)
-        }
-    }
-
-    /// Create a new folder in `directory` (the current folder if nil). When it
-    /// lands in the visible folder, select it and start renaming.
-    func makeNewFolder(in directory: URL? = nil) {
-        guard let target = directory ?? folder else { return }
-        showTargetThenCreate(in: target) {
-            try FileOperations.newFolder(in: target).lastPathComponent
-        }
-    }
-
-    /// Show `target` (navigating into it if it isn't already the visible folder),
-    /// run `create` to make a new item there, then select it and begin inline
-    /// rename. Centralizes the "create something + name it" flow.
-    private func showTargetThenCreate(in target: URL, _ create: () throws -> String) {
-        if !samePath(target, folder) { onOpenFolder?(target) } // make it visible first
-        do {
-            let name = try create()
-            finishMutation(affected: [target], selecting: [name], renameFirst: true)
-        } catch {
-            NSSound.beep()
-        }
-    }
-
-    private func selectedURLs() -> [URL] {
-        tableView.selectedRowIndexes.filter { $0 < items.count }.map { items[$0].url }
-    }
-
-    /// Broadcast the affected folders (refreshing this + other windows + the
-    /// tree), then select/begin-rename newly-created items in this folder.
-    private func finishMutation(affected: Set<URL>, selecting names: [String] = [], renameFirst: Bool = false) {
-        FolderChange.notify(Array(affected))
-        guard !names.isEmpty else { return }
-        let wanted = Set(names)
-        let rows = items.enumerated()
-            .filter { wanted.contains($0.element.url.lastPathComponent) }
-            .map(\.offset)
-        guard !rows.isEmpty else { return }
-        tableView.selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
-        if renameFirst, let name = names.first { beginRenameDeferred(named: name) }
+    func contextMenu(forClickedRow row: Int) -> NSMenu? {
+        if contents.item(at: row)?.isParentLink == true { return nil }
+        return contents.contextMenu(clickedIndex: row, target: contents)
     }
 }
 
-// MARK: - In-place rename
+// MARK: - Inline rename (in the name cell)
 
 extension DetailsTableController: NSTextFieldDelegate {
-    func beginRename(row: Int) {
-        guard row >= 0, row < items.count,
+    func beginRename(at row: Int) {
+        guard contents.item(at: row) != nil,
               let nameColumn = tableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == "name" })
         else { return }
+        tableView.window?.makeFirstResponder(tableView)
         tableView.selectRowIndexes([row], byExtendingSelection: false)
         tableView.scrollRowToVisible(row)
         guard let cell = tableView.view(atColumn: nameColumn, row: row, makeIfNecessary: true) as? NSTableCellView,
-              let field = cell.textField else { return }
+              let field = cell.textField, let item = contents.item(at: row) else { return }
         field.isEditable = true
         field.isBordered = true
         field.drawsBackground = true
         field.delegate = self
-        field.stringValue = items[row].name // plain text, drop any hover underline
+        field.stringValue = item.name
         renamingRow = row
-        // Start editing through the table (caller has focused it). Fall back to
-        // focusing the field directly, and if neither actually begins editing,
-        // clear `renamingRow` so a failed attempt can't jam future renames.
-        tableView.window?.makeFirstResponder(tableView)
+        contents.isRenaming = true
         tableView.editColumn(nameColumn, row: row, with: nil, select: false)
         if field.currentEditor() == nil {
             tableView.window?.makeFirstResponder(field)
         }
         guard let editor = field.currentEditor() else {
             renamingRow = -1
+            contents.isRenaming = false
             field.isEditable = false
             field.isBordered = false
             field.drawsBackground = false
             return
         }
-        // Select just the base name (excluding ".ext"), Finder-style, so typing
-        // preserves the suffix. Dotfiles / extension-less names select all.
-        let nsName = items[row].name as NSString
+        let nsName = item.name as NSString
         let baseLength = (nsName.deletingPathExtension as NSString).length
         editor.selectedRange = (baseLength > 0 && baseLength < nsName.length)
             ? NSRange(location: 0, length: baseLength)
             : NSRange(location: 0, length: nsName.length)
     }
 
-    /// Esc cancels the rename cleanly. The default field-editor abort wasn't
-    /// reliably restoring the cell, so handle it: mark it canceled (so
-    /// `controlTextDidEndEditing` no-ops), abort the editor, and reload on the
-    /// next tick to drop the edit appearance.
+    /// Esc cancels the rename cleanly.
     func control(_ control: NSControl, textView: NSTextView,
                  doCommandBy commandSelector: Selector) -> Bool {
         guard commandSelector == #selector(NSResponder.cancelOperation(_:)) else { return false }
         renamingRow = -1
+        contents.isRenaming = false
         control.abortEditing()
         let tv = tableView
         DispatchQueue.main.async { [weak self] in
-            self?.reload()
-            tv.window?.makeFirstResponder(tv)  // keep the list focused (blue, arrows work)
+            self?.contents.reload()
+            tv.window?.makeFirstResponder(tv)
         }
         return true
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
-        guard renamingRow >= 0, renamingRow < items.count else { return }
+        guard renamingRow >= 0 else { return }
         let row = renamingRow
         renamingRow = -1
-        let item = items[row]
+        contents.isRenaming = false
         let movement = (obj.userInfo?["NSTextMovement"] as? Int) ?? 0
         let canceled = movement == NSTextMovement.cancel.rawValue
-        let newName = (obj.object as? NSTextField)?.stringValue ?? item.name
+        let newName = (obj.object as? NSTextField)?.stringValue ?? ""
         var renamed = false
-        if !canceled, newName.trimmingCharacters(in: .whitespacesAndNewlines) != item.name {
-            do {
-                let dest = try FileOperations.rename(item.url, to: newName)
-                finishMutation(affected: [item.url.deletingLastPathComponent()],
-                               selecting: [dest.lastPathComponent])
-                renamed = true
-            } catch {
-                NSSound.beep()
-            }
-        }
-        if !renamed { reload() } // restore label appearance / original name
-        // Return focus to the list so the selection stays active (blue) and
-        // arrow/Return keys keep working after the edit.
+        if !canceled { renamed = contents.commitRename(at: row, to: newName) }
+        if !renamed { contents.reload() }
         let tv = tableView
         DispatchQueue.main.async { tv.window?.makeFirstResponder(tv) }
     }
@@ -507,360 +411,69 @@ extension DetailsTableController: NSTextFieldDelegate {
 
 extension DetailsTableController {
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-        guard row < items.count else { return nil }
-        return items[row].url as NSURL
+        guard let item = contents.item(at: row), !item.isParentLink else { return nil }
+        return item.url as NSURL
     }
 
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession,
                    endedAt screenPoint: NSPoint, operation: NSDragOperation) {
-        // The other side (Finder/another window) may have moved files out of
-        // here, and the reported operation isn't always reliable (e.g. a
-        // "Keep Both" rename on collision reports a copy), so refresh our folder
-        // whenever a drag out of it ends.
-        if let folder { FolderChange.notify([folder]) }
+        if let folder = contents.folder { FolderChange.notify([folder]) }
     }
 
-    func tableView(_ tableView: NSTableView,
-                   validateDrop info: NSDraggingInfo,
+    func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo,
                    proposedRow row: Int,
                    proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
         guard let destination = dropDestination(forRow: row, operation: dropOperation) else { return [] }
-        // Dropping into the current folder: highlight the whole list, not a row.
-        if samePath(destination, folder) {
+        if contents.samePath(destination, contents.folder) {
             tableView.setDropRow(-1, dropOperation: .on)
         }
-        return dragOperation(for: info)
+        return contents.dragOperation(for: info)
     }
 
-    func tableView(_ tableView: NSTableView,
-                   acceptDrop info: NSDraggingInfo,
-                   row: Int,
+    func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int,
                    dropOperation: NSTableView.DropOperation) -> Bool {
         guard let destination = dropDestination(forRow: row, operation: dropOperation) else { return false }
         let urls = info.draggingPasteboard.readObjects(
             forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
         guard !urls.isEmpty else { return false }
-
-        let move = dragOperation(for: info) == .move
-        let selectLanded = samePath(destination, folder)
-        // Defer so any collision prompt doesn't run inside the drop handler.
+        let move = contents.dragOperation(for: info) == .move
+        let selectLanded = contents.samePath(destination, contents.folder)
         DispatchQueue.main.async { [weak self] in
-            self?.performTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
+            self?.contents.performTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
         }
         return true
     }
 
-    /// A drop targets a subfolder row (drop ON a folder) or the current folder.
     private func dropDestination(forRow row: Int, operation: NSTableView.DropOperation) -> URL? {
-        if operation == .on, row >= 0, row < items.count,
-           items[row].isDirectory, !items[row].isPackage {
-            return items[row].url
+        if operation == .on, let item = contents.item(at: row), item.isDirectory, !item.isPackage {
+            return item.url
         }
-        return folder
-    }
-
-    /// Move by default; copy when ⌥ is held (or when move isn't offered).
-    private func dragOperation(for info: NSDraggingInfo) -> NSDragOperation {
-        let allowed = info.draggingSourceOperationMask
-        if NSEvent.modifierFlags.contains(.option) { return allowed.contains(.copy) ? .copy : [] }
-        if allowed.contains(.move) { return .move }
-        return allowed.contains(.copy) ? .copy : []
-    }
-
-    private func isSelfOrDescendant(_ url: URL, of directory: URL) -> Bool {
-        let target = url.standardizedFileURL.path
-        let dir = directory.standardizedFileURL.path
-        return dir == target || dir.hasPrefix(target + "/")
-    }
-
-    private func samePath(_ a: URL?, _ b: URL?) -> Bool {
-        a?.standardizedFileURL.path == b?.standardizedFileURL.path
+        return contents.folder
     }
 }
 
-// MARK: - Transfer with collision handling
+/// A header view that reports a double-click on a column's right divider, so the
+/// column can size itself to fit its content (spreadsheet-style).
+final class ResizingHeaderView: NSTableHeaderView {
+    var onDoubleClickRightEdge: ((Int) -> Void)?
 
-private extension DetailsTableController {
-    enum CollisionChoice { case keepBoth, replace, stop }
-
-    /// Copy or move `urls` into `destination`, resolving name collisions per the
-    /// user's preference (silent keep-both, or a Finder-style prompt), then refresh.
-    func performTransfer(_ urls: [URL], into destination: URL, move: Bool, selectLanded: Bool) {
-        var landed: [String] = []
-        var affected: Set<URL> = [destination]
-        var applyToAll: CollisionChoice?
-        let ask = Preferences.shared.promptOnCollision
-
-        for url in urls {
-            if isSelfOrDescendant(url, of: destination) { continue }
-            let target = destination.appendingPathComponent(url.lastPathComponent)
-            let sameParent = samePath(url.deletingLastPathComponent(), destination)
-            let collides = !sameParent && FileManager.default.fileExists(atPath: target.path)
-
-            var choice: CollisionChoice = .keepBoth
-            if collides {
-                if !ask {
-                    choice = .keepBoth
-                } else if let all = applyToAll {
-                    choice = all
-                } else {
-                    let result = askCollision(name: url.lastPathComponent, in: destination,
-                                              multiple: urls.count > 1)
-                    if result.applyToAll { applyToAll = result.choice }
-                    choice = result.choice
-                }
-            }
-            if choice == .stop { break }
-
-            do {
-                switch choice {
-                case .keepBoth:
-                    let dest = move ? try FileOperations.move(url, into: destination)
-                                    : try FileOperations.copy(url, into: destination)
-                    landed.append(dest.lastPathComponent)
-                case .replace:
-                    _ = try? FileOperations.moveToTrash(target) // existing → Trash (recoverable)
-                    let dest = move ? try FileOperations.move(url, to: target)
-                                    : try FileOperations.copy(url, to: target)
-                    landed.append(dest.lastPathComponent)
-                case .stop:
-                    break
-                }
-                if move { affected.insert(url.deletingLastPathComponent()) }
-            } catch {
-                NSSound.beep()
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            let point = convert(event.locationInWindow, from: nil)
+            if let column = columnAtRightEdge(point) {
+                onDoubleClickRightEdge?(column)
+                return
             }
         }
-        finishMutation(affected: affected, selecting: selectLanded ? landed : [])
+        super.mouseDown(with: event)
     }
 
-    func askCollision(name: String, in destination: URL,
-                      multiple: Bool) -> (choice: CollisionChoice, applyToAll: Bool) {
-        let alert = NSAlert()
-        alert.messageText = "An item named “\(name)” already exists in “\(destination.lastPathComponent)”."
-        alert.informativeText = "Keep both items, replace the existing one, or cancel?"
-        alert.addButton(withTitle: "Keep Both")
-        alert.addButton(withTitle: "Replace")
-        alert.addButton(withTitle: "Cancel")
-        var checkbox: NSButton?
-        if multiple {
-            let box = NSButton(checkboxWithTitle: "Apply to All", target: nil, action: nil)
-            box.sizeToFit()
-            alert.accessoryView = box
-            checkbox = box
+    private func columnAtRightEdge(_ point: NSPoint) -> Int? {
+        guard let tableView else { return nil }
+        let tolerance: CGFloat = 5
+        for index in 0..<tableView.numberOfColumns where abs(point.x - headerRect(ofColumn: index).maxX) <= tolerance {
+            return index
         }
-        let response = alert.runModal()
-        let applyToAll = checkbox?.state == .on
-        switch response {
-        case .alertFirstButtonReturn: return (.keepBoth, applyToAll)
-        case .alertSecondButtonReturn: return (.replace, applyToAll)
-        default: return (.stop, applyToAll)
-        }
-    }
-}
-
-// MARK: - Context menu + extra commands
-
-extension DetailsTableController {
-    func contextMenu(forClickedRow row: Int) -> NSMenu? {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        if row < 0 || row >= items.count {
-            // Empty space → act on the current folder.
-            if let folder {
-                menu.addItem(NewDocument.submenuItem(for: folder, target: self,
-                                                     action: #selector(ctxNew(_:))))
-            }
-            add(menu, "Paste", #selector(ctxPaste(_:)), enabled: Clipboard.shared.canPaste)
-            menu.addItem(.separator())
-            add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
-            add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
-            add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
-            return menu
-        }
-        let item = items[row]
-        let isFolder = item.isDirectory && !item.isPackage
-        add(menu, "Open", #selector(ctxOpen(_:)))
-        if isFolder {
-            add(menu, "Open in New Window", #selector(ctxOpenInNewWindow(_:)))
-            add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
-            menu.addItem(NewDocument.submenuItem(for: item.url, target: self,
-                                                 action: #selector(ctxNew(_:))))
-        } else {
-            let openWith = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
-            openWith.submenu = OpenWith.submenu(for: item.url, target: self,
-                                                action: #selector(ctxOpenWithApp(_:)))
-            menu.addItem(openWith)
-        }
-        menu.addItem(.separator())
-        add(menu, "Cut", #selector(ctxCut(_:)))
-        add(menu, "Copy", #selector(ctxCopy(_:)))
-        add(menu, "Duplicate", #selector(ctxDuplicate(_:)))
-        menu.addItem(.separator())
-        add(menu, "Rename", #selector(ctxRename(_:)))
-        add(menu, "Move to Trash", #selector(ctxTrash(_:)))
-        menu.addItem(.separator())
-        add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
-        add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
-        if isFolder {
-            menu.addItem(.separator())
-            if Favorites.shared.contains(item.url) {
-                add(menu, "Remove from Favorites", #selector(ctxRemoveFavorite(_:)))
-            } else {
-                add(menu, "Add to Favorites", #selector(ctxAddFavorite(_:)))
-            }
-        }
-        return menu
-    }
-
-    private func add(_ menu: NSMenu, _ title: String, _ action: Selector, enabled: Bool = true) {
-        let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: "")
-        menuItem.target = self
-        menuItem.isEnabled = enabled
-        menu.addItem(menuItem)
-    }
-
-    // MARK: New ▸ submenu
-
-    @objc private func ctxNew(_ sender: NSMenuItem) {
-        guard let choice = sender.representedObject as? NewMenuChoice else { return }
-        switch choice.kind {
-        case .folder: makeNewFolder(in: choice.directory)
-        case .document(let type): makeNewDocument(type, in: choice.directory)
-        case .internetShortcut: makeInternetShortcut(in: choice.directory)
-        }
-    }
-
-    // MARK: Folder commands by URL (for the tree's context menu to call)
-
-    func cutFolder(_ url: URL) { Clipboard.shared.set([url], operation: .cut) }
-    func copyFolder(_ url: URL) { Clipboard.shared.set([url], operation: .copy) }
-
-    func duplicateFolder(_ url: URL) {
-        let parent = url.deletingLastPathComponent()
-        do {
-            let name = try FileOperations.copy(url, into: parent).lastPathComponent
-            finishMutation(affected: [parent], selecting: samePath(parent, folder) ? [name] : [])
-        } catch { NSSound.beep() }
-    }
-
-    func trashFolder(_ url: URL) {
-        let parent = url.deletingLastPathComponent()
-        do {
-            _ = try FileOperations.moveToTrash(url)
-            finishMutation(affected: [parent])
-        } catch { NSSound.beep() }
-    }
-
-    /// Rename a folder identified by URL: show its parent (so it's visible to
-    /// edit inline), then start the rename.
-    func renameFolder(_ url: URL) {
-        let parent = url.deletingLastPathComponent()
-        if !samePath(parent, folder) { onOpenFolder?(parent) }
-        beginRenameDeferred(named: url.lastPathComponent)
-    }
-
-    /// Create an empty `untitled.<ext>` file and drop into inline rename.
-    func makeNewDocument(_ type: NewDocumentType, in directory: URL? = nil) {
-        guard let target = directory ?? folder else { return }
-        showTargetThenCreate(in: target) {
-            try FileOperations.newFile(
-                in: target, named: "\(NewDocument.defaultBaseName).\(type.ext)").lastPathComponent
-        }
-    }
-
-    /// Write the clipboard URL as a cross-platform `.url` Internet Shortcut.
-    func makeInternetShortcut(in directory: URL? = nil) {
-        guard let target = directory ?? folder,
-              let urlString = NewDocument.clipboardURL() else { NSSound.beep(); return }
-        showTargetThenCreate(in: target) {
-            let data = NewDocument.internetShortcutData(for: urlString)
-            return try FileOperations.newFile(
-                in: target, named: "\(NewDocument.defaultBaseName).url", contents: data).lastPathComponent
-        }
-    }
-
-    @objc private func ctxOpen(_ sender: Any?) { openSelected() }
-    @objc private func ctxCut(_ sender: Any?) { cutSelectedItems() }
-    @objc private func ctxCopy(_ sender: Any?) { copySelectedItems() }
-    @objc private func ctxPaste(_ sender: Any?) { pasteIntoFolder() }
-    @objc private func ctxDuplicate(_ sender: Any?) { duplicateSelectedItems() }
-    @objc private func ctxRename(_ sender: Any?) { renameSelectedItem() }
-    @objc private func ctxTrash(_ sender: Any?) { trashSelectedItems() }
-    @objc private func ctxReveal(_ sender: Any?) { revealSelection() }
-    @objc private func ctxCopyPath(_ sender: Any?) { copySelectionPaths() }
-    @objc private func ctxTerminal(_ sender: Any?) { openSelectionInTerminal() }
-    @objc private func ctxAddFavorite(_ sender: Any?) {
-        if let url = singleSelectedFolderURL() { Favorites.shared.add(url) }
-    }
-    @objc private func ctxRemoveFavorite(_ sender: Any?) {
-        if let url = singleSelectedFolderURL() { Favorites.shared.remove(url) }
-    }
-    @objc private func ctxOpenInNewWindow(_ sender: Any?) {
-        if let url = singleSelectedFolderURL() {
-            (NSApp.delegate as? AppDelegate)?.openWindow(showing: url)
-        }
-    }
-    @objc private func ctxOpenWithApp(_ sender: NSMenuItem) {
-        let urls = selectedItemURLs()
-        if let appURL = sender.representedObject as? URL {
-            OpenWith.open(urls, with: appURL)
-        } else {
-            OpenWith.openWithOtherApp(urls) // "Other…"
-        }
-    }
-
-    func duplicateSelectedItems() {
-        let urls = selectedItemURLs()
-        guard !urls.isEmpty, let folder else { return }
-        var names: [String] = []
-        for url in urls {
-            do { names.append(try FileOperations.copy(url, into: folder).lastPathComponent) }
-            catch { NSSound.beep() }
-        }
-        finishMutation(affected: [folder], selecting: names)
-    }
-
-    func revealSelection() {
-        let urls = selectedItemURLs()
-        if urls.isEmpty {
-            if let folder { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
-        } else {
-            NSWorkspace.shared.activateFileViewerSelecting(urls)
-        }
-    }
-
-    func copySelectionPaths() {
-        let urls = selectedItemURLs()
-        let paths = urls.isEmpty ? (folder.map { [$0.path] } ?? []) : urls.map(\.path)
-        guard !paths.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
-    }
-
-    func openSelectionInTerminal() {
-        guard let target = singleSelectedFolderURL() ?? folder else { return }
-        Shell.openInTerminal(target)
-    }
-
-    private func selectedItemURLs() -> [URL] {
-        tableView.selectedRowIndexes.filter { $0 < items.count }.map { items[$0].url }
-    }
-
-    private func singleSelectedFolderURL() -> URL? {
-        let rows = tableView.selectedRowIndexes
-        guard rows.count == 1, let row = rows.first, row < items.count else { return nil }
-        let item = items[row]
-        return (item.isDirectory && !item.isPackage) ? item.url : nil
-    }
-}
-
-private extension ComparisonResult {
-    var reversed: ComparisonResult {
-        switch self {
-        case .orderedAscending: return .orderedDescending
-        case .orderedDescending: return .orderedAscending
-        case .orderedSame: return .orderedSame
-        }
+        return nil
     }
 }

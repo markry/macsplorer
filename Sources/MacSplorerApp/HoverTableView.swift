@@ -37,6 +37,10 @@ protocol HoverTableFileActions: AnyObject {
 final class HoverTableView: NSTableView, NSMenuItemValidation {
     weak var fileActions: HoverTableFileActions?
 
+    /// Tab / Shift-Tab moves focus between the window's main panes (the host wires
+    /// this). `true` = backward (Shift-Tab).
+    var onTab: ((Bool) -> Void)?
+
     /// How long the pointer must rest on a row before the selection moves to it.
     /// ~0.5s matches Windows; tunable.
     var selectionDwell: TimeInterval = 0.5
@@ -161,7 +165,9 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
 
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if (event.keyCode == 36 || event.keyCode == 76), modifiers.isEmpty {
+        if event.keyCode == 48, let onTab {          // Tab / Shift-Tab → next pane
+            onTab(modifiers.contains(.shift))
+        } else if (event.keyCode == 36 || event.keyCode == 76), modifiers.isEmpty {
             fileActions?.renameSelectedItem()        // Return / keypad Enter
         } else if (event.keyCode == 51 || event.keyCode == 117),
                   modifiers.isEmpty || modifiers == .command {

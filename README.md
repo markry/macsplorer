@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.5.
+> **Status:** v0.6.
 
 ## Features
 
@@ -16,8 +16,21 @@ expect:
 
 - **Two panes** — a lazy, expandable folder tree and a details list, split and
   resizable.
-- **Sortable columns** — Name, Date Modified, Type, Size. Folders sort apart
-  from files; packages (`.app`, `.pvm`, …) show their aggregate size.
+- **List & icon views** — the right pane shows either a details **list** or a
+  thumbnail **icon grid** (content previews for images, PDFs, and video; file-
+  type icons otherwise). Switch with the three-icon control at the right of the
+  status bar — List / Small icons / Large icons — or **View ▸ as List** (`⌘1`),
+  **as Small Icons** (`⌘2`), **as Large Icons** (`⌘3`). The view choice is
+  **per-window**; other view settings are shared across windows.
+- **Sortable, configurable columns** — Name, Date Modified, Type, Size by
+  default; turn on Date Created, Date Added, and Date Last Opened via **View ▸
+  Columns** or by right-clicking the column header. Drag to reorder and resize
+  (Name stays first); **double-click a column's right edge** to size it to fit
+  its content. Widths and order persist. Folders sort apart from files; packages
+  (`.app`, `.pvm`, …) show their aggregate size.
+- **"Up" row** — optionally (**View ▸ Show Up Item (..)**) a `..` row pins to the
+  top of the list/grid; open it (or select it and press Return) to go to the
+  parent folder. Off by default.
 - **Favorites** — a pinned, resizable list at the top of the left pane for
   folders you jump to often. Right-click any folder to add/remove, or drag a
   folder onto it; drag within the list to reorder. Clicking a favorite jumps
@@ -54,6 +67,9 @@ expect:
   are closed, missing ones reopened. Absolute screen positions are saved as-is,
   so make a layout per monitor setup and pick it by name. The app also reopens
   the *last* arrangement on relaunch, instead of a single OS-centered window.
+- **Tab between panes** — `Tab` cycles focus through the address bar → right pane
+  → folder tree → Favorites (and `⇧Tab` reverses), landing on a usable selection
+  each time.
 
 The one part that goes beyond what Explorer or Finder offer — and is worth
 learning — is the address bar, described next.
@@ -64,6 +80,11 @@ The full-path bar across the top is the **Filesystem Address Bar**. Beyond
 showing and copying the current location, it's built for fast keyboard
 navigation:
 
+- **Breadcrumb ⇄ editable**, Windows-Explorer-style. When unfocused it shows the
+  path as **clickable folder buttons** (`›`-separated, home as a house icon) —
+  click any ancestor to jump straight there. Click the bar's empty area to turn
+  it back into the **editable full path** (a trailing `/` and the cursor ready
+  for the next segment), with everything below available.
 - **Type a path and press Enter.** A folder path navigates there; a file path
   **opens** the file (it doesn't rename it — Finder's address-style behavior).
   The left tree expands and selects to match.

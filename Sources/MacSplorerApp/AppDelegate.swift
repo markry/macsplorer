@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var cascadePoint = NSPoint.zero
     private let applyLayoutsMenu = NSMenu(title: "Apply Window Layout")
     private let deleteLayoutsMenu = NSMenu(title: "Delete Window Layout")
+    private let columnsMenu = NSMenu(title: "Columns")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Don't let macOS auto-insert its own icon-bearing "Enter Full Screen"
@@ -182,8 +183,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         windowControllers.forEach { $0.window?.makeKeyAndOrderFront(nil) }
     }
 
-    /// Rebuild the Apply / Delete submenus from the saved layouts when they open.
+    /// Toggle a details-pane column on/off (from the View ▸ Columns submenu or the
+    /// header right-click menu), applying the change to every open pane.
+    func toggleDetailsColumn(_ id: String) {
+        guard id != "name" else { return }
+        var columns = Preferences.shared.detailsColumns
+        if columns.contains(id) {
+            columns.removeAll { $0 == id }
+        } else {
+            columns = DetailsColumnSpec.insertInOrder(id, into: columns)
+        }
+        Preferences.shared.detailsColumns = columns
+        windowControllers.forEach { $0.applyColumns() }
+    }
+
+    @objc private func toggleColumnItem(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        toggleDetailsColumn(id)
+    }
+
+    // MARK: View mode (list / icon grid)
+
+    /// Switch the key window to the details list (view mode is per-window).
+    func chooseListView() {
+        keyController?.setViewMode("list", iconSize: nil)
+    }
+
+    /// Switch the key window to the icon grid at `size` (view mode is per-window).
+    func chooseIconView(size: IconSize) {
+        keyController?.setViewMode("icon", iconSize: size.rawValue)
+    }
+
+    @objc private func showAsList(_ sender: Any?) { chooseListView() }
+    @objc private func showAsSmallIcons(_ sender: Any?) { chooseIconView(size: .small) }
+    @objc private func showAsLargeIcons(_ sender: Any?) { chooseIconView(size: .large) }
+
+    /// Rebuild the Apply / Delete / Columns submenus when they open.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === columnsMenu {
+            menu.removeAllItems()
+            let visible = Set(Preferences.shared.detailsColumns)
+            for spec in DetailsColumnSpec.toggleable {
+                let item = NSMenuItem(title: spec.title,
+                                      action: #selector(toggleColumnItem(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = spec.id
+                item.state = visible.contains(spec.id) ? .on : .off
+                menu.addItem(item)
+            }
+            return
+        }
         let isApply = (menu === applyLayoutsMenu)
         guard isApply || menu === deleteLayoutsMenu else { return }
         menu.removeAllItems()
@@ -307,6 +356,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         hidden.target = self
         viewMenu.addItem(hidden)
 
+        let upItem = NSMenuItem(title: "Show Up Item (..)",
+                                action: #selector(toggleParentItem(_:)),
+                                keyEquivalent: "")
+        upItem.target = self
+        viewMenu.addItem(upItem)
+
         let singleClick = NSMenuItem(title: "Single-Click to Open",
                                      action: #selector(toggleSingleClick(_:)),
                                      keyEquivalent: "")
@@ -324,6 +379,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                                   keyEquivalent: "")
         raiseAll.target = self
         viewMenu.addItem(raiseAll)
+
+        // Columns ▸ — a checkmark per optional details-pane column. Rebuilds its
+        // contents each time it opens (via menuNeedsUpdate).
+        let columnsItem = NSMenuItem(title: "Columns", action: nil, keyEquivalent: "")
+        columnsMenu.delegate = self
+        columnsItem.submenu = columnsMenu
+        viewMenu.addItem(columnsItem)
+
+        // Right-pane view (mirrors the status-bar control): list / small / large.
+        viewMenu.addItem(.separator())
+        let asList = NSMenuItem(title: "as List", action: #selector(showAsList(_:)), keyEquivalent: "1")
+        asList.target = self
+        viewMenu.addItem(asList)
+        let asSmall = NSMenuItem(title: "as Small Icons", action: #selector(showAsSmallIcons(_:)), keyEquivalent: "2")
+        asSmall.target = self
+        viewMenu.addItem(asSmall)
+        let asLarge = NSMenuItem(title: "as Large Icons", action: #selector(showAsLargeIcons(_:)), keyEquivalent: "3")
+        asLarge.target = self
+        viewMenu.addItem(asLarge)
 
         viewMenu.addItem(.separator())
         let showFavorites = NSMenuItem(title: "Show Favorites",
@@ -407,6 +481,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         windowControllers.forEach { $0.applyPreferences() }
     }
 
+    @objc private func toggleParentItem(_ sender: Any?) {
+        Preferences.shared.showParentItem.toggle()
+        windowControllers.forEach { $0.applyPreferences() }
+    }
+
     @objc private func togglePromptOnCollision(_ sender: Any?) {
         Preferences.shared.promptOnCollision.toggle()
     }
@@ -431,6 +510,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             menuItem.state = Preferences.shared.showHiddenFiles ? .on : .off
         case #selector(toggleSingleClick(_:)):
             menuItem.state = Preferences.shared.singleClickToOpen ? .on : .off
+        case #selector(toggleParentItem(_:)):
+            menuItem.state = Preferences.shared.showParentItem ? .on : .off
         case #selector(togglePromptOnCollision(_:)):
             menuItem.state = Preferences.shared.promptOnCollision ? .on : .off
         case #selector(toggleRaiseAll(_:)):
@@ -439,6 +520,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             menuItem.state = Preferences.shared.showFavorites ? .on : .off
         case #selector(toggleMenuBar(_:)):
             menuItem.state = Preferences.shared.showMenuBar ? .on : .off
+        case #selector(showAsList(_:)):
+            menuItem.state = keyController?.activeViewMode?.mode == "list" ? .on : .off
+        case #selector(showAsSmallIcons(_:)):
+            let active = keyController?.activeViewMode
+            menuItem.state = (active?.mode == "icon" && active?.iconSize == "small") ? .on : .off
+        case #selector(showAsLargeIcons(_:)):
+            let active = keyController?.activeViewMode
+            menuItem.state = (active?.mode == "icon" && active?.iconSize == "large") ? .on : .off
         case #selector(openTerminal(_:)):
             return keyController?.canOpenInTerminal ?? false
         default:

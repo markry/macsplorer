@@ -19,6 +19,16 @@ final class FavoritesSplitView: NSSplitView {
 /// A table that vends a per-row context menu (selecting the clicked row first).
 final class FavoritesTableView: NSTableView {
     var onContextMenu: ((Int) -> NSMenu?)?
+    var onTab: ((Bool) -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 48, let onTab {
+            onTab(event.modifierFlags.contains(.shift))
+            return
+        }
+        super.keyDown(with: event)
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let clicked = row(at: convert(event.locationInWindow, from: nil))
         if clicked >= 0 && selectedRow != clicked {
@@ -40,6 +50,21 @@ final class FavoritesController: NSObject {
     /// Fired when the favorites count changes, so the host can re-fit the
     /// (resizable) pane height.
     var onCountChanged: ((Int) -> Void)?
+
+    /// The view to focus for this pane (Tab cycling), and the Tab passthrough.
+    var keyView: NSView { tableView }
+    var onTab: ((Bool) -> Void)? {
+        get { tableView.onTab }
+        set { tableView.onTab = newValue }
+    }
+
+    /// Give the list a hard selection (first row) if it has none — so arriving via
+    /// Tab leaves the keyboard immediately usable.
+    func ensureSelection() {
+        if tableView.selectedRow < 0 && tableView.numberOfRows > 0 {
+            tableView.selectRowIndexes([0], byExtendingSelection: false)
+        }
+    }
 
     private let tableView = FavoritesTableView()
     private var favorites: [URL] = []
