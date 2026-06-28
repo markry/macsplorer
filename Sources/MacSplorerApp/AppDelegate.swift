@@ -1,8 +1,10 @@
 import AppKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     private var windowControllers: [MainWindowController] = []
     private var cascadePoint = NSPoint.zero
+    private let applyLayoutsMenu = NSMenu(title: "Apply Window Layout")
+    private let deleteLayoutsMenu = NSMenu(title: "Delete Window Layout")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Don't let macOS auto-insert its own icon-bearing "Enter Full Screen"
@@ -13,8 +15,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NotificationCenter.default.addObserver(
             self, selector: #selector(windowBecameKey(_:)),
             name: NSWindow.didBecomeKeyNotification, object: nil)
-        newWindow(nil)
+        // Restore the last arrangement (reopen each window at its saved frame),
+        // or a single default window if there's no saved session.
+        let frames = WindowLayoutStore.shared.lastSessionFrames
+        if frames.isEmpty {
+            newWindow(nil)
+        } else {
+            frames.forEach { openWindow(frame: $0) }
+        }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Set once quitting begins. The full arrangement is snapshotted here, before
+    /// windows tear down; without this flag each window's `onClose` would re-run
+    /// `saveSession()` during teardown, overwriting the snapshot with an ever-
+    /// shrinking set and leaving only the last window to restore.
+    private var isTerminating = false
+
+    func applicationWillTerminate(_ notification: Notification) {
+        saveSession()
+        isTerminating = true
     }
 
     private var isRaisingAll = false
@@ -69,20 +89,120 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         keyController?.closeActiveTab()
     }
 
-    /// Open a new window, optionally navigated to `folder` (used by the
-    /// "Open in New Window" context-menu command).
-    func openWindow(showing folder: URL? = nil) {
+    /// Open a new window, optionally navigated to `folder`. With an explicit
+    /// `frame` (restore / apply-layout) the window takes that frame; otherwise it
+    /// inherits the launching window's size (cascaded), or cascades from default.
+    func openWindow(showing folder: URL? = nil, frame: NSRect? = nil) {
         let controller = MainWindowController(initialFolder: folder)
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.windowControllers.removeAll { $0 === controller }
+            self.saveSession()
         }
+        controller.onFrameChanged = { [weak self] in self?.saveSession() }
         windowControllers.append(controller)
         guard let window = controller.window else { return }
-        // Cascade so a new window doesn't land exactly on the previous one.
-        cascadePoint = window.cascadeTopLeft(from: cascadePoint)
+        if let frame {
+            window.setFrame(frame, display: false)
+        } else if let source = NSApp.keyWindow,
+                  windowControllers.contains(where: { $0.window === source }), source !== window {
+            // Match the launching window's size, offset so it doesn't land on it.
+            var f = source.frame
+            f.origin.x += 24
+            f.origin.y -= 24
+            window.setFrame(f, display: false)
+        } else {
+            cascadePoint = window.cascadeTopLeft(from: cascadePoint)
+        }
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
+        saveSession()
+    }
+
+    /// Snapshot the current window arrangement for restore-on-restart. Never
+    /// saves an empty set, so quitting via closing the last window keeps the
+    /// prior arrangement.
+    private func saveSession() {
+        guard !isTerminating else { return }
+        let frames = windowControllers.compactMap { $0.window?.frame }
+        guard !frames.isEmpty else { return }
+        WindowLayoutStore.shared.lastSessionFrames = frames
+    }
+
+    // MARK: Window layouts
+
+    @objc private func saveWindowLayout(_ sender: Any?) {
+        guard !windowControllers.isEmpty else { NSSound.beep(); return }
+        let alert = NSAlert()
+        alert.messageText = "Save Window Layout"
+        alert.informativeText = "Name this arrangement of \(windowControllers.count) window(s). Reusing a name replaces it."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
+        field.placeholderString = "Layout name"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let frames = windowControllers.compactMap { $0.window?.frame }
+        WindowLayoutStore.shared.save(name: name, frames: frames)
+    }
+
+    @objc private func applyLayoutItem(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String,
+              let layout = WindowLayoutStore.shared.layout(named: name) else { return }
+        applyLayout(layout)
+    }
+
+    @objc private func deleteLayoutItem(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        WindowLayoutStore.shared.delete(name: name)
+    }
+
+    /// Reproduce the saved arrangement: move existing windows to the saved
+    /// frames, open windows for any extra frames, and close any windows beyond
+    /// the layout's count.
+    private func applyLayout(_ layout: WindowLayout) {
+        let frames = layout.frames
+        // Position the windows we already have.
+        for index in 0..<min(frames.count, windowControllers.count) {
+            windowControllers[index].window?.setFrame(frames[index], display: true, animate: false)
+        }
+        // Open windows for any extra frames.
+        if frames.count > windowControllers.count {
+            let base = windowControllers.count
+            for index in base..<frames.count { openWindow(frame: frames[index]) }
+        }
+        // Close any windows beyond the layout.
+        else if windowControllers.count > frames.count {
+            let extras = Array(windowControllers[frames.count...])
+            extras.forEach { $0.window?.close() }
+        }
+        windowControllers.forEach { $0.window?.makeKeyAndOrderFront(nil) }
+    }
+
+    /// Rebuild the Apply / Delete submenus from the saved layouts when they open.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let isApply = (menu === applyLayoutsMenu)
+        guard isApply || menu === deleteLayoutsMenu else { return }
+        menu.removeAllItems()
+        let layouts = WindowLayoutStore.shared.layouts()
+        guard !layouts.isEmpty else {
+            let empty = NSMenuItem(title: "No Saved Layouts", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+            return
+        }
+        for layout in layouts {
+            let item = NSMenuItem(
+                title: layout.name,
+                action: isApply ? #selector(applyLayoutItem(_:)) : #selector(deleteLayoutItem(_:)),
+                keyEquivalent: "")
+            item.target = self
+            item.representedObject = layout.name
+            menu.addItem(item)
+        }
     }
 
     // MARK: Menu
@@ -225,6 +345,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         fullScreen.keyEquivalentModifierMask = [.control, .command] // routes to the key window
         viewMenu.addItem(fullScreen)
 
+        // Saved window layouts: capture the current window arrangement by name,
+        // and switch to a saved one. These live in View (not Window) because the
+        // Window menu is macOS-owned; the Apply/Delete submenus rebuild their
+        // contents each time they open (via menuNeedsUpdate).
+        viewMenu.addItem(.separator())
+        let save = NSMenuItem(title: "Save Window Layout…",
+                              action: #selector(saveWindowLayout(_:)), keyEquivalent: "")
+        save.target = self
+        viewMenu.addItem(save)
+
+        let applyItem = NSMenuItem(title: "Apply Window Layout", action: nil, keyEquivalent: "")
+        applyLayoutsMenu.delegate = self
+        applyItem.submenu = applyLayoutsMenu
+        viewMenu.addItem(applyItem)
+
+        let deleteItem = NSMenuItem(title: "Delete Window Layout", action: nil, keyEquivalent: "")
+        deleteLayoutsMenu.delegate = self
+        deleteItem.submenu = deleteLayoutsMenu
+        viewMenu.addItem(deleteItem)
+
         // Window menu — once it's the app's designated windowsMenu, macOS
         // auto-populates it with the open-window list and the tabbing items
         // (Show Tab Bar, Merge All Windows, …) when multiple windows are open.
@@ -238,6 +378,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         windowMenu.addItem(withTitle: "Zoom",
                            action: #selector(NSWindow.performZoom(_:)),
                            keyEquivalent: "")
+
+        windowMenu.addItem(.separator())
         NSApp.windowsMenu = windowMenu
 
         return mainMenu
