@@ -702,9 +702,13 @@ extension DetailsTableController {
         menu.addItem(.separator())
         add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
         add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
-        if isFolder, !Favorites.shared.contains(item.url) {
+        if isFolder {
             menu.addItem(.separator())
-            add(menu, "Add to Favorites", #selector(ctxAddFavorite(_:)))
+            if Favorites.shared.contains(item.url) {
+                add(menu, "Remove from Favorites", #selector(ctxRemoveFavorite(_:)))
+            } else {
+                add(menu, "Add to Favorites", #selector(ctxAddFavorite(_:)))
+            }
         }
         return menu
     }
@@ -788,6 +792,9 @@ extension DetailsTableController {
     @objc private func ctxTerminal(_ sender: Any?) { openSelectionInTerminal() }
     @objc private func ctxAddFavorite(_ sender: Any?) {
         if let url = singleSelectedFolderURL() { Favorites.shared.add(url) }
+    }
+    @objc private func ctxRemoveFavorite(_ sender: Any?) {
+        if let url = singleSelectedFolderURL() { Favorites.shared.remove(url) }
     }
     @objc private func ctxOpenInNewWindow(_ sender: Any?) {
         if let url = singleSelectedFolderURL() {

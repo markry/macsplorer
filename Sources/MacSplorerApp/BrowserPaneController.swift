@@ -5,18 +5,20 @@ import MacSplorerCore
 /// two-pane split (folder tree | details table), and a status bar below. It
 /// coordinates the two pane controllers and address-bar navigation. The hosting
 /// `MainWindowController` stacks one of these under the tab strip at a time.
-final class BrowserPaneController: NSViewController, NSTextFieldDelegate {
+final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSplitViewDelegate {
 
     private let addressField = AddressTextField()
     private var addressFieldEditor: AddressFieldEditor?
     private let statusLabel = NSTextField(labelWithString: "")
     private let splitView = NSSplitView()
+    private let favoritesSplit = FavoritesSplitView()
     private let outlineView = FolderOutlineView()
     private let tableView = HoverTableView()
     private let terminalButton = NSButton()
 
     private var treeController: FolderTreeController!
     private var detailsController: DetailsTableController!
+    private let favoritesController = FavoritesController()
 
     private let initialFolder: URL?
 
@@ -265,8 +267,9 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate {
         // re-reveal, which would loop). Double-click in details: navigate +
         // reveal so the tree follows.
         treeController.onSelect = { [weak self] url in self?.showFolder(url) }
-        // Clicking a Favorite jumps there: show it AND expand the tree to it.
-        treeController.onSelectFavorite = { [weak self] url in self?.navigate(to: url) }
+        // Clicking a Favorite (in the pinned pane above) jumps there: show it AND
+        // expand/reveal it in the tree below.
+        favoritesController.onSelect = { [weak self] url in self?.navigate(to: url) }
         // Tree folder commands route to the details pane, which owns the file-op
         // implementations — so the left and right folder menus behave identically.
         treeController.onFolderCommand = { [weak self] command, url in
@@ -308,13 +311,13 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate {
         configureAddressField()
         configureTerminalButton()
         configureStatusLabel()
-        let leftScroll = makeFolderTree()
+        let leftPane = makeLeftPane()
         let rightScroll = makeDetailsTable()
 
         splitView.isVertical = true
         splitView.dividerStyle = .thin
         splitView.translatesAutoresizingMaskIntoConstraints = false
-        splitView.addArrangedSubview(leftScroll)
+        splitView.addArrangedSubview(leftPane)
         splitView.addArrangedSubview(rightScroll)
 
         root.addSubview(addressField)
@@ -323,7 +326,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate {
         root.addSubview(statusLabel)
 
         let pad: CGFloat = 8
-        let leftWidth = leftScroll.widthAnchor.constraint(equalToConstant: 240)
+        let leftWidth = leftPane.widthAnchor.constraint(equalToConstant: 240)
         leftWidth.priority = .defaultLow
 
         NSLayoutConstraint.activate([
@@ -344,7 +347,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate {
             statusLabel.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
 
             leftWidth,
-            leftScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
+            leftPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
         ])
         self.view = root
     }
@@ -352,6 +355,30 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         wireControllers()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        // Once the split has a real size, set the initial Favorites pane height.
+        if !didInitialFavoritesFit, favoritesSplit.bounds.height > 0 {
+            didInitialFavoritesFit = true
+            refitFavoritesPane()
+        }
+    }
+
+    // MARK: NSSplitViewDelegate (Favorites pane sizing)
+
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMin: CGFloat,
+                   ofSubviewAt dividerIndex: Int) -> CGFloat {
+        guard splitView === favoritesSplit else { return proposedMin }
+        return favoritesController.preferredHeight(rows: 1) // at least the header + one row
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMax: CGFloat,
+                   ofSubviewAt dividerIndex: Int) -> CGFloat {
+        guard splitView === favoritesSplit else { return proposedMax }
+        return max(favoritesController.preferredHeight(rows: 1),
+                   splitView.bounds.height - 120) // keep the tree at least ~120pt
     }
 
     private func configureAddressField() {
@@ -384,6 +411,49 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    /// Default number of favorites the pane grows to fit before scrolling.
+    private static let defaultFavoriteRows = 6
+    /// User-chosen pane height (nil = auto-fit). Persisted across launches.
+    private var userFavoritesHeight: CGFloat?
+    private var didInitialFavoritesFit = false
+
+    /// The left pane: the pinned Favorites list on top and the folder tree below,
+    /// split by a draggable divider. The Favorites pane defaults to fitting up to
+    /// `defaultFavoriteRows` favorites (then scrolls), but the user can drag the
+    /// divider taller; that choice sticks and persists.
+    private func makeLeftPane() -> NSView {
+        let saved = Preferences.shared.favoritesPaneHeight
+        userFavoritesHeight = saved > 0 ? CGFloat(saved) : nil
+
+        favoritesSplit.isVertical = false        // stacked vertically
+        favoritesSplit.dividerStyle = .thin
+        favoritesSplit.delegate = self
+        favoritesSplit.translatesAutoresizingMaskIntoConstraints = false
+        favoritesSplit.addArrangedSubview(favoritesController.view)
+        favoritesSplit.addArrangedSubview(makeFolderTree())
+        // Favorites keeps its height on window resize; the tree absorbs it.
+        favoritesSplit.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
+        favoritesSplit.setHoldingPriority(NSLayoutConstraint.Priority(250), forSubviewAt: 1)
+
+        favoritesSplit.onUserDividerDrag = { [weak self] in
+            guard let self else { return }
+            let height = self.favoritesController.view.frame.height
+            self.userFavoritesHeight = height
+            Preferences.shared.favoritesPaneHeight = Double(height)
+        }
+        favoritesController.onCountChanged = { [weak self] _ in self?.refitFavoritesPane() }
+        return favoritesSplit
+    }
+
+    /// Position the divider: the user's chosen height if set, else fit up to
+    /// `defaultFavoriteRows` favorites.
+    private func refitFavoritesPane() {
+        guard favoritesSplit.bounds.height > 0 else { return }
+        let target = userFavoritesHeight
+            ?? favoritesController.preferredHeight(rows: Self.defaultFavoriteRows)
+        favoritesSplit.setPosition(target, ofDividerAt: 0)
     }
 
     private func makeFolderTree() -> NSScrollView {
