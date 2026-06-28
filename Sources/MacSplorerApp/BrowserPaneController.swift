@@ -51,12 +51,22 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         applyFavoritesVisibility()
     }
 
-    /// Show or hide the pinned Favorites pane per the preference (re-fitting its
-    /// height when shown).
+    /// Show or hide the pinned Favorites pane per the preference. Hiding
+    /// *collapses* the split pane (which removes the pane and its divider) — just
+    /// hiding the view leaves a blank gap. Showing restores it to its fitted size.
     private func applyFavoritesVisibility() {
         let show = Preferences.shared.showFavorites
-        favoritesController.view.isHidden = !show
-        if show { refitFavoritesPane() }
+        guard favoritesSplit.bounds.height > 0 else {
+            // Before layout — the initial fit in viewDidLayout will finalize this.
+            favoritesController.view.isHidden = !show
+            return
+        }
+        if show {
+            favoritesController.view.isHidden = false
+            refitFavoritesPane()
+        } else {
+            favoritesSplit.setPosition(0, ofDividerAt: 0) // collapse: hides pane + divider
+        }
     }
 
     /// Whether the address field holds a real folder (drives the Terminal
@@ -371,11 +381,16 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         // Once the split has a real size, set the initial Favorites pane height.
         if !didInitialFavoritesFit, favoritesSplit.bounds.height > 0 {
             didInitialFavoritesFit = true
-            refitFavoritesPane()
+            applyFavoritesVisibility() // fit if shown, collapse if hidden
         }
     }
 
     // MARK: NSSplitViewDelegate (Favorites pane sizing)
+
+    func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
+        // Only the Favorites pane (top) collapses — used to hide it cleanly.
+        splitView === favoritesSplit && subview === favoritesController.view
+    }
 
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMin: CGFloat,
                    ofSubviewAt dividerIndex: Int) -> CGFloat {
@@ -460,7 +475,9 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// Position the divider: the user's chosen height if set, else fit up to
     /// `defaultFavoriteRows` favorites.
     private func refitFavoritesPane() {
-        guard favoritesSplit.bounds.height > 0 else { return }
+        // Don't re-expand a hidden pane (e.g. when favorites change while hidden).
+        guard favoritesSplit.bounds.height > 0, Preferences.shared.showFavorites else { return }
+        favoritesController.view.isHidden = false
         let target = userFavoritesHeight
             ?? favoritesController.preferredHeight(rows: Self.defaultFavoriteRows)
         favoritesSplit.setPosition(target, ofDividerAt: 0)

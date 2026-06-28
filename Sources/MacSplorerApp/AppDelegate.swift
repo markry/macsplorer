@@ -5,6 +5,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var cascadePoint = NSPoint.zero
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Don't let macOS auto-insert its own icon-bearing "Enter Full Screen"
+        // item into the View menu — its image column misaligns the other items.
+        // We add a clean, icon-less one ourselves below.
+        UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
         NSApp.mainMenu = makeMainMenu()
         NotificationCenter.default.addObserver(
             self, selector: #selector(windowBecameKey(_:)),
@@ -213,6 +217,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                                      keyEquivalent: "")
         showMenuBar.target = self
         viewMenu.addItem(showMenuBar)
+
+        viewMenu.addItem(.separator())
+        let fullScreen = NSMenuItem(title: "Enter Full Screen",
+                                    action: #selector(NSWindow.toggleFullScreen(_:)),
+                                    keyEquivalent: "f")
+        fullScreen.keyEquivalentModifierMask = [.control, .command] // routes to the key window
+        viewMenu.addItem(fullScreen)
 
         // Window menu — once it's the app's designated windowsMenu, macOS
         // auto-populates it with the open-window list and the tabbing items
