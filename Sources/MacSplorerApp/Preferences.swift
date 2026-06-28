@@ -46,4 +46,17 @@ final class Preferences {
         get { defaults.bool(forKey: "raiseAllWindowsTogether") }
         set { defaults.set(newValue, forKey: "raiseAllWindowsTogether") }
     }
+
+    /// Whether the pinned Favorites pane is shown. On by default; remembered if
+    /// the user hides it.
+    var showFavorites: Bool {
+        get { defaults.object(forKey: "showFavorites") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "showFavorites") }
+    }
+
+    /// Whether the in-window menu bar is shown. On by default.
+    var showMenuBar: Bool {
+        get { defaults.object(forKey: "showMenuBar") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "showMenuBar") }
+    }
 }

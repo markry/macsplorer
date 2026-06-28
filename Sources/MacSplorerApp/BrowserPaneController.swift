@@ -48,6 +48,15 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         detailsController.singleClickToOpen = prefs.singleClickToOpen
         detailsController.reload()
         treeController.refresh(revealing: detailsController.folder)
+        applyFavoritesVisibility()
+    }
+
+    /// Show or hide the pinned Favorites pane per the preference (re-fitting its
+    /// height when shown).
+    private func applyFavoritesVisibility() {
+        let show = Preferences.shared.showFavorites
+        favoritesController.view.isHidden = !show
+        if show { refitFavoritesPane() }
     }
 
     /// Whether the address field holds a real folder (drives the Terminal
@@ -444,6 +453,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
             Preferences.shared.favoritesPaneHeight = Double(height)
         }
         favoritesController.onCountChanged = { [weak self] _ in self?.refitFavoritesPane() }
+        favoritesController.view.isHidden = !Preferences.shared.showFavorites
         return favoritesSplit
     }
 

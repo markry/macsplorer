@@ -201,6 +201,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         raiseAll.target = self
         viewMenu.addItem(raiseAll)
 
+        viewMenu.addItem(.separator())
+        let showFavorites = NSMenuItem(title: "Show Favorites",
+                                       action: #selector(toggleFavorites(_:)),
+                                       keyEquivalent: "")
+        showFavorites.target = self
+        viewMenu.addItem(showFavorites)
+
+        let showMenuBar = NSMenuItem(title: "Show Menu Bar",
+                                     action: #selector(toggleMenuBar(_:)),
+                                     keyEquivalent: "")
+        showMenuBar.target = self
+        viewMenu.addItem(showMenuBar)
+
         // Window menu — once it's the app's designated windowsMenu, macOS
         // auto-populates it with the open-window list and the tabbing items
         // (Show Tab Bar, Merge All Windows, …) when multiple windows are open.
@@ -249,6 +262,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         Preferences.shared.raiseAllWindowsTogether.toggle()
     }
 
+    @objc private func toggleFavorites(_ sender: Any?) {
+        Preferences.shared.showFavorites.toggle()
+        windowControllers.forEach { $0.applyPreferences() }
+    }
+
+    @objc private func toggleMenuBar(_ sender: Any?) {
+        Preferences.shared.showMenuBar.toggle()
+        windowControllers.forEach { $0.applyMenuBarVisibility() }
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(toggleHiddenFiles(_:)):
@@ -259,6 +282,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             menuItem.state = Preferences.shared.promptOnCollision ? .on : .off
         case #selector(toggleRaiseAll(_:)):
             menuItem.state = Preferences.shared.raiseAllWindowsTogether ? .on : .off
+        case #selector(toggleFavorites(_:)):
+            menuItem.state = Preferences.shared.showFavorites ? .on : .off
+        case #selector(toggleMenuBar(_:)):
+            menuItem.state = Preferences.shared.showMenuBar ? .on : .off
         case #selector(openTerminal(_:)):
             return keyController?.canOpenInTerminal ?? false
         default:
