@@ -20,10 +20,6 @@ final class FolderTreeController: NSObject {
     /// Called when the user selects a folder in the tree.
     var onSelect: ((URL) -> Void)?
 
-    /// Called when the user clicks a Favorite — navigate AND reveal it in the
-    /// hierarchy below (a true "jump there"), unlike a plain tree click.
-    var onSelectFavorite: ((URL) -> Void)?
-
     /// Routes a folder file-operation chosen in the tree's context menu to the
     /// details pane, which owns the implementations — so the left and right
     /// folder menus are identical.
@@ -37,24 +33,6 @@ final class FolderTreeController: NSObject {
 
     /// The folder the context menu was opened on (the right-clicked row).
     private var clickedFolder: FSItem?
-
-    /// The virtual "Favorites" root (row 0) and its current children (favorite
-    /// folders, rendered as leaves — never expandable here).
-    private let favoritesRoot = FavoritesRoot()
-    private var favoriteItems: [FSItem] = []
-    private var favoriteItemIDs = Set<ObjectIdentifier>()
-
-    private func isFavoriteItem(_ item: FSItem) -> Bool {
-        favoriteItemIDs.contains(ObjectIdentifier(item))
-    }
-
-    private static let favoritesIcon = NSImage(
-        systemSymbolName: "star.fill", accessibilityDescription: "Favorites")
-
-    private func rebuildFavoriteItems() {
-        favoriteItems = Favorites.shared.folders().map { FSItem(url: $0) }
-        favoriteItemIDs = Set(favoriteItems.map { ObjectIdentifier($0) })
-    }
 
     /// Determine off the main thread whether `item` actually has subfolders, so
     /// the disclosure triangle only appears when expanding would do something.
@@ -103,18 +81,13 @@ final class FolderTreeController: NSObject {
             FSItem(url: URL(fileURLWithPath: "/")),
         ]
         super.init()
-        rebuildFavoriteItems()
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.onContextMenu = { [weak self] row in self?.contextMenu(forRow: row) }
         outlineView.reloadData()
-        if !favoriteItems.isEmpty { outlineView.expandItem(favoritesRoot) }
         NotificationCenter.default.addObserver(
             self, selector: #selector(folderDidChange(_:)),
             name: FolderChange.didChange, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(favoritesDidChange(_:)),
-            name: Favorites.didChange, object: nil)
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -123,14 +96,6 @@ final class FolderTreeController: NSObject {
         for folder in FolderChange.folders(from: note) {
             refreshSubtree(at: folder)
         }
-    }
-
-    /// Rebuild just the Favorites subtree (the rest of the tree keeps its state),
-    /// and keep it expanded while it has contents.
-    @objc private func favoritesDidChange(_ note: Notification) {
-        rebuildFavoriteItems()
-        outlineView.reloadItem(favoritesRoot, reloadChildren: true)
-        if !favoriteItems.isEmpty { outlineView.expandItem(favoritesRoot) }
     }
 
     /// Expand + select the Home root (row 0). Done after the coordinator wires
@@ -225,24 +190,17 @@ final class FolderTreeController: NSObject {
 
 extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        guard let item else { return 1 + roots.count }  // Favorites + Home + disk
-        if item is FavoritesRoot { return favoriteItems.count }
-        guard let fsItem = item as? FSItem else { return 0 }
-        if isFavoriteItem(fsItem) { return 0 }           // favorites are flat leaves
-        return fsItem.folderChildren(includeHidden: showHiddenFiles).count
+        guard let item = item as? FSItem else { return roots.count }
+        return item.folderChildren(includeHidden: showHiddenFiles).count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        guard let item else { return index == 0 ? favoritesRoot : roots[index - 1] }
-        if item is FavoritesRoot { return favoriteItems[index] }
-        let fsItem = item as! FSItem
-        return fsItem.folderChildren(includeHidden: showHiddenFiles)[index]
+        guard let item = item as? FSItem else { return roots[index] }
+        return item.folderChildren(includeHidden: showHiddenFiles)[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        if item is FavoritesRoot { return !favoriteItems.isEmpty }
-        guard let fsItem = item as? FSItem, !isFavoriteItem(fsItem),
-              fsItem.isExpandableInTree else { return false }
+        guard let fsItem = item as? FSItem, fsItem.isExpandableInTree else { return false }
         if let known = fsItem.knownHasSubfolders(includeHidden: showHiddenFiles) {
             return known
         }
@@ -253,32 +211,25 @@ extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        guard let fsItem = item as? FSItem else { return nil }
         let cell = outlineView.makeView(withIdentifier: Self.cellID, owner: self) as? NSTableCellView
             ?? Self.makeCell()
-        if item is FavoritesRoot {
-            cell.textField?.stringValue = "Favorites"
-            cell.imageView?.image = Self.favoritesIcon
-            cell.imageView?.contentTintColor = .systemYellow
-            return cell
-        }
-        guard let fsItem = item as? FSItem else { return nil }
         cell.textField?.stringValue = fsItem.name
         cell.imageView?.image = NSWorkspace.shared.icon(forFile: fsItem.url.path)
-        cell.imageView?.contentTintColor = nil
         return cell
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         let row = outlineView.selectedRow
-        guard row >= 0 else { return }
-        let item = outlineView.item(atRow: row)
-        if item is FavoritesRoot { return }              // header row — no navigation
-        guard let fsItem = item as? FSItem else { return }
-        if isFavoriteItem(fsItem) {
-            onSelectFavorite?(fsItem.url)                // navigate + reveal below
-        } else {
-            onSelect?(fsItem.url)
-        }
+        guard row >= 0, let item = outlineView.item(atRow: row) as? FSItem else { return }
+        onSelect?(item.url)
+    }
+
+    /// Let folders be dragged out of the tree (so you can drag one onto the
+    /// Favorites pane). Carries the folder's file URL.
+    func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
+        guard let fsItem = item as? FSItem else { return nil }
+        return fsItem.url as NSURL
     }
 }
 
@@ -292,7 +243,7 @@ extension FolderTreeController {
     }
 
     private func contextMenu(forRow row: Int) -> NSMenu? {
-        guard let item = clickedItem(forRow: row) else { return nil } // nil for Favorites header
+        guard let item = clickedItem(forRow: row) else { return nil }
         clickedFolder = item
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -300,17 +251,7 @@ extension FolderTreeController {
         add(menu, "Open in New Window", #selector(ctxOpenInNewWindow(_:)))
         add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
 
-        if isFavoriteItem(item) {
-            // Favorites keep the short menu (they're shortcuts, not the folder).
-            menu.addItem(.separator())
-            add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
-            add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
-            menu.addItem(.separator())
-            add(menu, "Remove from Favorites", #selector(ctxRemoveFavorite(_:)))
-            return menu
-        }
-
-        // Regular folder → the full menu, identical to the details pane's.
+        // Full menu, identical to the details pane's.
         menu.addItem(NewDocument.submenuItem(for: item.url, target: self,
                                              action: #selector(ctxNew(_:))))
         menu.addItem(.separator())
@@ -323,8 +264,10 @@ extension FolderTreeController {
         menu.addItem(.separator())
         add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
         add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
-        if !Favorites.shared.contains(item.url) {
-            menu.addItem(.separator())
+        menu.addItem(.separator())
+        if Favorites.shared.contains(item.url) {
+            add(menu, "Remove from Favorites", #selector(ctxRemoveFavorite(_:)))
+        } else {
             add(menu, "Add to Favorites", #selector(ctxAddFavorite(_:)))
         }
         return menu
@@ -339,7 +282,7 @@ extension FolderTreeController {
 
     @objc private func ctxOpen(_ sender: Any?) {
         guard let folder = clickedFolder else { return }
-        if isFavoriteItem(folder) { onSelectFavorite?(folder.url) } else { onSelect?(folder.url) }
+        onSelect?(folder.url)
     }
 
     @objc private func ctxAddFavorite(_ sender: Any?) {

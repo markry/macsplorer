@@ -1,9 +1,5 @@
 import Foundation
 
-/// The virtual top-level "Favorites" node in the left tree. It isn't a real
-/// filesystem item — it just holds the user's pinned folders (one level deep).
-final class FavoritesRoot {}
-
 /// Persisted, ordered list of favorite folders, shared across all windows/tabs.
 /// Posts `didChange` so every open tree refreshes.
 final class Favorites {
@@ -44,6 +40,20 @@ final class Favorites {
         guard list.indices.contains(from) else { return }
         let item = list.remove(at: from)
         list.insert(item, at: min(max(to, 0), list.count))
+        save(list)
+    }
+
+    /// Insert `url` at `index` (drag-drop). If it's already a favorite, move it
+    /// there instead, applying the standard remove-then-insert index shift.
+    func insert(_ url: URL, at index: Int) {
+        let std = url.standardizedFileURL
+        var list = folders()
+        var dest = index
+        if let existing = list.firstIndex(where: { $0.standardizedFileURL.path == std.path }) {
+            list.remove(at: existing)
+            if existing < dest { dest -= 1 }
+        }
+        list.insert(std, at: min(max(dest, 0), list.count))
         save(list)
     }
 

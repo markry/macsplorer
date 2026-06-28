@@ -32,4 +32,11 @@ final class Preferences {
         get { defaults.bool(forKey: Key.singleClickToOpen) }
         set { defaults.set(newValue, forKey: Key.singleClickToOpen) }
     }
+
+    /// User-chosen height of the Favorites pane (0 = unset → auto-fit to ~6).
+    /// Set when the user drags the divider.
+    var favoritesPaneHeight: Double {
+        get { defaults.double(forKey: "favoritesPaneHeight") }
+        set { defaults.set(newValue, forKey: "favoritesPaneHeight") }
+    }
 }
