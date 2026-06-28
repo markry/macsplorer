@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.1 — first public release.
+> **Status:** v0.3.
 
 ## Features
 
@@ -18,12 +18,20 @@ expect:
   resizable.
 - **Sortable columns** — Name, Date Modified, Type, Size. Folders sort apart
   from files; packages (`.app`, `.pvm`, …) show their aggregate size.
-- **Right-click context menus** in both panes — Open, Open With ▸, Cut / Copy /
-  Paste, Duplicate, Rename, Move to Trash, New Folder, Open in Terminal, Reveal
-  in Finder, Copy Path.
+- **Favorites** — a pinned, resizable list at the top of the left pane for
+  folders you jump to often. Right-click any folder to add/remove, or drag a
+  folder onto it; drag within the list to reorder. Clicking a favorite jumps
+  there and reveals it in the tree.
+- **Right-click context menus**, identical in both panes — Open, Open With ▸,
+  Cut / Copy / Paste, Duplicate, Rename, Move to Trash, **New ▸**, Open in
+  Terminal, Reveal in Finder, Copy Path, Add/Remove Favorites.
+- **New ▸ submenu** — create a new Folder, or an empty document (Text, Markdown,
+  Rich Text, CSV, Word, PowerPoint) ready to name, or an **Internet Shortcut**
+  (`.url`) from the URL on your clipboard — written in the cross-platform format
+  so it opens on macOS and in a Windows VM alike.
 - **File operations** — copy / cut / paste (with name-collision prompts),
-  rename in place, duplicate, move to Trash, new folder. Live folder watching
-  keeps every window current.
+  rename in place, duplicate, move to Trash (`⌫` or `⌘⌫`), new folder. Live
+  folder watching keeps every window current.
 - **Quick Look** — press the spacebar to preview the selection, just like
   Finder.
 - **Familiar shortcuts** — `⌘N` new window, `⌘⇧N` new folder, `⌘O` open,
@@ -34,7 +42,8 @@ expect:
 - **Windows & tabs** — open multiple windows (`⌘N`) and browser-style tabs
   within a window: `⌘T` for a new tab, `⌘W` to close one, or the **+** button on
   the tab strip. Click a tab to switch; hover to reveal its close (✕). The strip
-  hides itself when only one tab is open.
+  hides itself when only one tab is open. Optionally (**View ▸ Raise All Windows
+  Together**) have all windows come forward as a group when you switch to the app.
 
 The one part that goes beyond what Explorer or Finder offer — and is worth
 learning — is the address bar, described next.
