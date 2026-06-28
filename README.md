@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.3.
+> **Status:** v0.4.
 
 ## Features
 
@@ -39,6 +39,10 @@ expect:
   hidden files, `⌥⌘T` open the current folder in Terminal.
 - **Finder interop** — drag and drop to/from Finder, Reveal in Finder, Copy
   Path.
+- **In-window menu bar** — optionally (**View ▸ Show Menu Bar**) the app's menus
+  (File / Edit / View / Window) sit right under the tab strip, with hover to
+  switch between them — so they're at the top of the *window*, not off in the
+  corner of the screen.
 - **Windows & tabs** — open multiple windows (`⌘N`) and browser-style tabs
   within a window: `⌘T` for a new tab, `⌘W` to close one, or the **+** button on
   the tab strip. Click a tab to switch; hover to reveal its close (✕). The strip
