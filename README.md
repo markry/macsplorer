@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.6.
+> **Status:** v0.7.
 
 ## Features
 
@@ -47,6 +47,13 @@ expect:
   folder watching keeps every window current.
 - **Quick Look** — press the spacebar to preview the selection, just like
   Finder.
+- **Folder sizes** — **File ▸ Calculate Folder Sizes…** runs a parallel, low-
+  priority background walk of the current folder, totalling **size-on-disk**, and
+  opens a results window: an indented outline of folders, biggest first, with
+  size and % of total. Double-click a row to jump there. Live progress (with a
+  Stop button) shows in the status bar. Cloud (File Provider) mounts are skipped
+  by default (**View ▸ Skip Cloud Storage When Scanning**), and because it counts
+  on-disk bytes, online-only cloud files register as ~0.
 - **Familiar shortcuts** — `⌘N` new window, `⌘⇧N` new folder, `⌘O` open,
   `⌘X/⌘C/⌘V` cut/copy/paste, `⌘D` duplicate, `⌘⌫` move to Trash, `⌘⇧.` show
   hidden files, `⌥⌘T` open the current folder in Terminal.

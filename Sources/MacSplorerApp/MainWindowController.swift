@@ -66,6 +66,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         activePane.map { ($0.currentViewMode, $0.currentIconSize) }
     }
 
+    /// Start a folder-size scan rooted at the active tab's current folder.
+    func calculateFolderSizes() { activePane?.startSizeScan() }
+
     // MARK: - Tabs
 
     /// Open a new tab (File ▸ New Tab / ⌘T / the strip's "+").

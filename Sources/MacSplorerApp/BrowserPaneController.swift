@@ -12,6 +12,14 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     private var addressFieldEditor: AddressFieldEditor?
     private let statusLabel = NSTextField(labelWithString: "")
     private let viewModeControl = ViewModeControl()
+
+    // Folder-size scan (occasional, background) — status-bar feedback + Stop.
+    private let scanSpinner = NSProgressIndicator()
+    private let scanStopButton = NSButton()
+    private let scanControls = NSStackView()
+    private var activeScan: FolderSizeScanner?
+    private var scanProgressTimer: Timer?
+    private var scanStartDate: Date?
     private let splitView = NSSplitView()
     private let favoritesSplit = FavoritesSplitView()
     private let outlineView = FolderOutlineView()
@@ -532,11 +540,13 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         splitView.addArrangedSubview(rightContainer)
 
         pathBar.translatesAutoresizingMaskIntoConstraints = false
+        configureScanControls()
         root.addSubview(addressField)
         root.addSubview(pathBar)
         root.addSubview(terminalButton)
         root.addSubview(splitView)
         root.addSubview(statusLabel)
+        root.addSubview(scanControls)
         root.addSubview(viewModeControl)
 
         let pad: CGFloat = 8
@@ -564,10 +574,15 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
             statusLabel.topAnchor.constraint(equalTo: splitView.bottomAnchor, constant: 4),
             statusLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: pad),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: viewModeControl.leadingAnchor, constant: -8),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: scanControls.leadingAnchor, constant: -8),
             statusLabel.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
 
-            // The four-icon view switch sits at the right end of the status bar.
+            // Scan spinner + Stop sit just left of the view switch (collapsed when
+            // idle — the stack drops its hidden subviews).
+            scanControls.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
+            scanControls.trailingAnchor.constraint(equalTo: viewModeControl.leadingAnchor, constant: -8),
+
+            // The three-icon view switch sits at the right end of the status bar.
             viewModeControl.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
             viewModeControl.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -pad),
             viewModeControl.heightAnchor.constraint(equalToConstant: 22),
@@ -641,7 +656,85 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         statusLabel.stringValue = "MacSplorer \(MacSplorer.version)"
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.lineBreakMode = .byTruncatingMiddle
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        // Let the label truncate the long "Scanning… …/path" text instead of
+        // forcing the window wider.
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    }
+
+    private func configureScanControls() {
+        scanSpinner.style = .spinning
+        scanSpinner.controlSize = .small
+        scanSpinner.isDisplayedWhenStopped = false
+        scanSpinner.isHidden = true
+
+        scanStopButton.title = "Stop"
+        scanStopButton.bezelStyle = .rounded
+        scanStopButton.controlSize = .small
+        scanStopButton.font = .systemFont(ofSize: 11)
+        scanStopButton.target = self
+        scanStopButton.action = #selector(cancelSizeScan)
+        scanStopButton.isHidden = true
+
+        scanControls.orientation = .horizontal
+        scanControls.spacing = 6
+        scanControls.translatesAutoresizingMaskIntoConstraints = false
+        scanControls.addArrangedSubview(scanSpinner)
+        scanControls.addArrangedSubview(scanStopButton)
+    }
+
+    // MARK: - Folder-size scan
+
+    /// Kick off a background size scan rooted at this window's current folder.
+    func startSizeScan() {
+        guard activeScan == nil else { NSSound.beep(); return }   // one at a time
+        guard let folder = contents.folder else { NSSound.beep(); return }
+        let scanner = FolderSizeScanner()
+        activeScan = scanner
+        scanStartDate = Date()
+        scanSpinner.isHidden = false
+        scanSpinner.startAnimation(nil)
+        scanStopButton.isHidden = false
+        statusLabel.stringValue = "Scanning…"
+        scanProgressTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.updateScanStatus()
+        }
+        scanner.scan(root: folder,
+                     skipCloudLocations: Preferences.shared.skipCloudInSizeScan) { [weak self] node in
+            self?.finishScan(node)
+        }
+    }
+
+    @objc private func cancelSizeScan() {
+        activeScan?.cancel()   // completion fires with nil → finishScan tears down
+    }
+
+    private func updateScanStatus() {
+        guard let scanner = activeScan, let start = scanStartDate else { return }
+        let progress = scanner.progress()
+        let elapsed = max(0.001, Date().timeIntervalSince(start))
+        let rate = FSFormat.size(Int64(Double(progress.bytes) / elapsed)) + "/s"
+        let path = (progress.currentPath as NSString).abbreviatingWithTildeInPath
+        statusLabel.stringValue =
+            "Scanning… \(progress.files) files · \(FSFormat.size(progress.bytes)) · \(rate) · \(path)"
+    }
+
+    private func finishScan(_ node: SizeNode?) {
+        scanProgressTimer?.invalidate()
+        scanProgressTimer = nil
+        scanSpinner.stopAnimation(nil)
+        scanSpinner.isHidden = true
+        scanStopButton.isHidden = true
+        activeScan = nil
+        contents.emitStatus()   // restore the normal item/selection status
+        guard let node else { return }   // cancelled
+        (NSApp.delegate as? AppDelegate)?.presentScanResults(node) { [weak self] url in
+            guard let self else { return }
+            self.navigate(to: url)
+            self.view.window?.makeKeyAndOrderFront(nil)
+        }
     }
 
     /// Default number of favorites the pane grows to fit before scrolling.
