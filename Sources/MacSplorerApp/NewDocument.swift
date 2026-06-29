@@ -28,12 +28,16 @@ enum NewDocument {
     /// matching what Windows Explorer writes — so the file is byte-compatible and
     /// opens in a browser on macOS and in the Parallels Windows VM alike.
     static func internetShortcutData(for url: String) -> Data {
+        // Defense in depth: strip any CR/LF so the URL value can never inject
+        // extra lines/keys into the INI-style file (see clipboardURL sanitization).
+        let safeURL = url.replacingOccurrences(of: "\r", with: "")
+                         .replacingOccurrences(of: "\n", with: "")
         let lines = [
             "[{000214A0-0000-0000-C000-000000000046}]",
             "Prop3=19,11",
             "[InternetShortcut]",
             "IDList=",
-            "URL=\(url)",
+            "URL=\(safeURL)",
         ]
         return Data((lines.joined(separator: "\r\n") + "\r\n").utf8)
     }
@@ -47,8 +51,12 @@ enum NewDocument {
         }
         if let string = pasteboard.string(forType: .string)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
+           // Reject interior line breaks: Foundation strips CR/LF before parsing,
+           // so a multi-line string can pass isWebURL yet smuggle extra .url lines.
+           !string.contains(where: \.isNewline),
            let url = URL(string: string), isWebURL(url) {
-            return string
+            // Return the re-encoded URL, never the raw clipboard text.
+            return url.absoluteString
         }
         return nil
     }
