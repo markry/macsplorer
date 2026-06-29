@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.7.1.
+> **Status:** v0.7.2.
 
 ## Features
 
@@ -41,7 +41,9 @@ expect:
 - **New ▸ submenu** — create a new Folder, or an empty document (Text, Markdown,
   Rich Text, CSV, Word, PowerPoint) ready to name, or an **Internet Shortcut**
   (`.url`) from the URL on your clipboard — written in the cross-platform format
-  so it opens on macOS and in a Windows VM alike.
+  so it opens on macOS and in a Windows VM alike. **File ▸ New Internet Shortcut
+  from URL** does the same directly (also **Fn+Shift+S** / **Fn+Shift+U** while
+  MacSplorer is focused).
 - **File operations** — copy / cut / paste (with name-collision prompts),
   rename in place, duplicate, move to Trash (`⌫` or `⌘⌫`), new folder. Live
   folder watching keeps every window current.

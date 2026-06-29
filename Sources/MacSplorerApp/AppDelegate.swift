@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private let applyLayoutsMenu = NSMenu(title: "Apply Window Layout")
     private let deleteLayoutsMenu = NSMenu(title: "Delete Window Layout")
     private let columnsMenu = NSMenu(title: "Columns")
+    private var internetShortcutMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Don't let macOS auto-insert its own icon-bearing "Enter Full Screen"
@@ -14,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // We add a clean, icon-less one ourselves below.
         UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
         NSApp.mainMenu = makeMainMenu()
+        installInternetShortcutHotkey()
         NotificationCenter.default.addObserver(
             self, selector: #selector(windowBecameKey(_:)),
             name: NSWindow.didBecomeKeyNotification, object: nil)
@@ -300,6 +302,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         newFolderItem.keyEquivalentModifierMask = [.command, .shift]
         newFolderItem.target = self
         fileMenu.addItem(newFolderItem)
+
+        // Internet Shortcut from the clipboard URL (also Fn+Shift+S / Fn+Shift+U,
+        // handled by a key monitor since Fn isn't a standard menu modifier).
+        let urlShortcutItem = NSMenuItem(title: "New Internet Shortcut from URL",
+                                         action: #selector(newInternetShortcut(_:)),
+                                         keyEquivalent: "")
+        urlShortcutItem.target = self
+        fileMenu.addItem(urlShortcutItem)
         let open = NSMenuItem(title: "Open",
                               action: #selector(openSelection(_:)),
                               keyEquivalent: "o")
@@ -481,6 +491,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         keyController?.makeNewFolder()
     }
 
+    @objc private func newInternetShortcut(_ sender: Any?) {
+        keyController?.makeInternetShortcut()
+    }
+
+    /// Fire "New Internet Shortcut" on Fn+Shift+S or Fn+Shift+U while MacSplorer is
+    /// focused (and not editing text). Done with a key monitor because Fn (Globe)
+    /// isn't a usable menu-item modifier. A *global* Fn+Shift+S macro will still
+    /// grab the key first; Fn+Shift+U is the reliable fallback.
+    private func installInternetShortcutHotkey() {
+        internetShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            if let window = NSApp.keyWindow, window.firstResponder is NSText { return event } // typing
+            let flags = event.modifierFlags
+            let blocked: NSEvent.ModifierFlags = [.command, .control, .option]
+            let isS = event.keyCode == 1, isU = event.keyCode == 32   // S / U
+            guard flags.contains(.function), flags.contains(.shift),
+                  flags.isDisjoint(with: blocked), isS || isU else { return event }
+            self.keyController?.makeInternetShortcut()
+            return nil   // consume
+        }
+    }
+
     @objc private func openTerminal(_ sender: Any?) {
         keyController?.openInTerminal()
     }
@@ -567,6 +599,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             menuItem.state = (active?.mode == "icon" && active?.iconSize == "large") ? .on : .off
         case #selector(openTerminal(_:)):
             return keyController?.canOpenInTerminal ?? false
+        case #selector(newInternetShortcut(_:)):
+            return NewDocument.clipboardURL() != nil
         default:
             break
         }

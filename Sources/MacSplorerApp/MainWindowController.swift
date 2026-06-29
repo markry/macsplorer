@@ -46,6 +46,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func openSelection() { activePane?.openSelection() }
     func makeNewFolder() { activePane?.makeNewFolder() }
+    func makeInternetShortcut() { activePane?.makeInternetShortcut() }
     @objc func openInTerminal() { activePane?.openInTerminal() }
     var canOpenInTerminal: Bool { activePane?.canOpenInTerminal ?? false }
 
