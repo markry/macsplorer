@@ -1,4 +1,5 @@
 import AppKit
+import MacSplorerCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     private var windowControllers: [MainWindowController] = []
@@ -311,6 +312,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         terminal.target = self
         fileMenu.addItem(terminal)
 
+        fileMenu.addItem(.separator())
+        let calcSizes = NSMenuItem(title: "Calculate Folder Sizes…",
+                                   action: #selector(calculateFolderSizes(_:)),
+                                   keyEquivalent: "")
+        calcSizes.target = self
+        fileMenu.addItem(calcSizes)
+
         // Edit menu. Cut/Copy/Paste use the standard selectors with no target, so
         // they route through the responder chain — acting on the address-bar text
         // when it's focused, or on the focused file list otherwise. Rename and
@@ -373,6 +381,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                                    keyEquivalent: "")
         collision.target = self
         viewMenu.addItem(collision)
+
+        let skipCloud = NSMenuItem(title: "Skip Cloud Storage When Scanning",
+                                   action: #selector(toggleSkipCloud(_:)),
+                                   keyEquivalent: "")
+        skipCloud.target = self
+        viewMenu.addItem(skipCloud)
 
         let raiseAll = NSMenuItem(title: "Raise All Windows Together",
                                   action: #selector(toggleRaiseAll(_:)),
@@ -471,6 +485,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         keyController?.openInTerminal()
     }
 
+    @objc private func calculateFolderSizes(_ sender: Any?) {
+        keyController?.calculateFolderSizes()
+    }
+
+    /// Show a scan's results in a new window (retained until the user closes it).
+    private var resultsWindows: [ScanResultsWindowController] = []
+    func presentScanResults(_ root: SizeNode, onOpenFolder: @escaping (URL) -> Void) {
+        let controller = ScanResultsWindowController(root: root)
+        controller.onOpenFolder = onOpenFolder
+        controller.onClose = { [weak self, weak controller] in
+            self?.resultsWindows.removeAll { $0 === controller }
+        }
+        resultsWindows.append(controller)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+    }
+
     @objc private func toggleHiddenFiles(_ sender: Any?) {
         Preferences.shared.showHiddenFiles.toggle()
         windowControllers.forEach { $0.applyPreferences() }
@@ -488,6 +519,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc private func togglePromptOnCollision(_ sender: Any?) {
         Preferences.shared.promptOnCollision.toggle()
+    }
+
+    @objc private func toggleSkipCloud(_ sender: Any?) {
+        Preferences.shared.skipCloudInSizeScan.toggle()
     }
 
     @objc private func toggleRaiseAll(_ sender: Any?) {
@@ -514,6 +549,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             menuItem.state = Preferences.shared.showParentItem ? .on : .off
         case #selector(togglePromptOnCollision(_:)):
             menuItem.state = Preferences.shared.promptOnCollision ? .on : .off
+        case #selector(toggleSkipCloud(_:)):
+            menuItem.state = Preferences.shared.skipCloudInSizeScan ? .on : .off
         case #selector(toggleRaiseAll(_:)):
             menuItem.state = Preferences.shared.raiseAllWindowsTogether ? .on : .off
         case #selector(toggleFavorites(_:)):

@@ -22,6 +22,10 @@ public enum FSFormat {
         return byteFormatter.string(fromByteCount: Int64(bytes))
     }
 
+    public static func size(_ bytes: Int64) -> String {
+        byteFormatter.string(fromByteCount: bytes)
+    }
+
     public static func date(_ date: Date?) -> String {
         guard let date else { return "" }
         return dateFormatter.string(from: date)

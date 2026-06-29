@@ -57,6 +57,13 @@ final class Preferences {
         set { defaults.set(newValue, forKey: "showParentItem") }
     }
 
+    /// Skip cloud (File Provider) mounts during a folder-size scan, unless the
+    /// scan is rooted inside one. On by default.
+    var skipCloudInSizeScan: Bool {
+        get { defaults.object(forKey: "skipCloudInSizeScan") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "skipCloudInSizeScan") }
+    }
+
     /// User-chosen height of the Favorites pane (0 = unset → auto-fit to ~6).
     /// Set when the user drags the divider.
     var favoritesPaneHeight: Double {
