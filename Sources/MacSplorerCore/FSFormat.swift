@@ -11,8 +11,9 @@ public enum FSFormat {
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
+        // Compact numeric date + time (no spelled-out month, no localized "at")
+        // so the date columns stay narrow: e.g. 06/28/2026 10:30 AM.
+        formatter.dateFormat = "MM/dd/yyyy h:mm a"
         return formatter
     }()
 

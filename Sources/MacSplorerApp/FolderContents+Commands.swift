@@ -1,5 +1,6 @@
 import AppKit
 import MacSplorerCore
+import UniformTypeIdentifiers
 
 // MARK: - File-operation commands (shared by the list and the grid)
 
@@ -368,7 +369,8 @@ extension FolderContents {
         } else {
             let openWith = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
             openWith.submenu = OpenWith.submenu(for: item.url, target: target,
-                                                action: #selector(ctxOpenWithApp(_:)))
+                                                openAction: #selector(ctxOpenWithApp(_:)),
+                                                setDefaultAction: #selector(ctxSetDefaultApp(_:)))
             menu.addItem(openWith)
         }
         menu.addItem(.separator())
@@ -437,6 +439,22 @@ extension FolderContents {
             OpenWith.open(urls, with: appURL)
         } else {
             OpenWith.openWithOtherApp(urls)
+        }
+    }
+
+    /// Make `sender`'s app the system default for the selected file's kind
+    /// (Finder's "Change All"), then refresh so icons update.
+    @objc func ctxSetDefaultApp(_ sender: NSMenuItem) {
+        guard let appURL = sender.representedObject as? URL,
+              let fileURL = selectedURLs().first else { return }
+        let type = (try? fileURL.resourceValues(forKeys: [.contentTypeKey]).contentType)
+            ?? UTType(filenameExtension: fileURL.pathExtension)
+        guard let type else { NSSound.beep(); return }
+        NSWorkspace.shared.setDefaultApplication(at: appURL, toOpen: type) { [weak self] error in
+            DispatchQueue.main.async {
+                if error != nil { NSSound.beep(); return }
+                if let folder = self?.folder { FolderChange.notify([folder]) }
+            }
         }
     }
 

@@ -296,20 +296,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                                       keyEquivalent: "w")
         closeTabItem.target = self
         fileMenu.addItem(closeTabItem)
-        let newFolderItem = NSMenuItem(title: "New Folder",
-                                       action: #selector(newFolder(_:)),
-                                       keyEquivalent: "n")
-        newFolderItem.keyEquivalentModifierMask = [.command, .shift]
-        newFolderItem.target = self
-        fileMenu.addItem(newFolderItem)
+        // New ▸ — mirrors the right-click New submenu; each item acts on the
+        // current folder of the frontmost window. Static so ⌘⇧N keeps working.
+        let newItem = NSMenuItem(title: "New", action: nil, keyEquivalent: "")
+        let newMenu = NSMenu(title: "New")
 
+        let folderItem = NSMenuItem(title: "Folder", action: #selector(newFolder(_:)), keyEquivalent: "n")
+        folderItem.keyEquivalentModifierMask = [.command, .shift]
+        folderItem.target = self
+        let folderIcon = NSImage(named: NSImage.folderName)
+        folderIcon?.size = NSSize(width: 16, height: 16)
+        folderItem.image = folderIcon
+        newMenu.addItem(folderItem)
+
+        newMenu.addItem(.separator())
+        for type in NewDocument.types {
+            let item = NSMenuItem(title: type.title, action: #selector(newDocumentFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = type
+            item.image = NewDocument.icon(forExtension: type.ext)
+            newMenu.addItem(item)
+        }
+
+        newMenu.addItem(.separator())
         // Internet Shortcut from the clipboard URL (also Fn+Shift+S / Fn+Shift+U,
-        // handled by a key monitor since Fn isn't a standard menu modifier).
-        let urlShortcutItem = NSMenuItem(title: "New Internet Shortcut from URL",
-                                         action: #selector(newInternetShortcut(_:)),
-                                         keyEquivalent: "")
-        urlShortcutItem.target = self
-        fileMenu.addItem(urlShortcutItem)
+        // via a key monitor since Fn isn't a standard menu modifier).
+        let shortcutItem = NSMenuItem(title: "Internet Shortcut",
+                                      action: #selector(newInternetShortcut(_:)), keyEquivalent: "")
+        shortcutItem.target = self
+        shortcutItem.image = NewDocument.icon(forExtension: "url")
+        newMenu.addItem(shortcutItem)
+
+        newItem.submenu = newMenu
+        fileMenu.addItem(newItem)
         let open = NSMenuItem(title: "Open",
                               action: #selector(openSelection(_:)),
                               keyEquivalent: "o")
@@ -495,6 +514,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         keyController?.makeInternetShortcut()
     }
 
+    @objc private func newDocumentFromMenu(_ sender: NSMenuItem) {
+        guard let type = sender.representedObject as? NewDocumentType else { return }
+        keyController?.makeNewDocument(type)
+    }
+
     /// Fire "New Internet Shortcut" on Fn+Shift+S or Fn+Shift+U while MacSplorer is
     /// focused (and not editing text). Done with a key monitor because Fn (Globe)
     /// isn't a usable menu-item modifier. A *global* Fn+Shift+S macro will still
@@ -601,6 +625,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return keyController?.canOpenInTerminal ?? false
         case #selector(newInternetShortcut(_:)):
             return NewDocument.clipboardURL() != nil
+        case #selector(closeTab(_:)):
+            // Only with real tabs — never close the window via "Close Tab".
+            return (keyController?.tabCount ?? 0) > 1
         default:
             break
         }
