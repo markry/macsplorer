@@ -26,7 +26,14 @@ APP="build/MacSplorer.app"
 TAG="v$VERSION"
 ZIP="dist/MacSplorer-$VERSION.zip"
 SUBMIT_ZIP="dist/MacSplorer-$VERSION-notarize.zip"
-export GH_CONFIG_DIR="${GH_CONFIG_DIR:-$HOME/.config/gh-personal}"
+# gh config dir: honor an explicit GH_CONFIG_DIR if set; otherwise use the
+# personal-account isolation dir when it exists (the Istari shared Mac), else
+# fall back to gh's default (~/.config/gh on a single-user Mac). Lets this script
+# run unchanged on either machine.
+if [ -z "${GH_CONFIG_DIR:-}" ] && [ -d "$HOME/.config/gh-personal" ]; then
+    export GH_CONFIG_DIR="$HOME/.config/gh-personal"
+fi
+echo "==> gh config dir: ${GH_CONFIG_DIR:-$HOME/.config/gh (default)}"
 
 [ -d "$APP" ] || { echo "ERROR: $APP not found — run scripts/build.sh first." >&2; exit 1; }
 mkdir -p dist
