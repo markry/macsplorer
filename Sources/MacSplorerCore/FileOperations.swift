@@ -45,6 +45,11 @@ public enum FileOperations {
     public static func rename(_ url: URL, to newName: String) throws -> URL {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != url.lastPathComponent else { return url }
+        // Reject path separators so a stray "/" (or ":", which Finder maps to "/")
+        // can't silently relocate the item out of its folder via appendingPathComponent.
+        guard !trimmed.contains("/"), !trimmed.contains(":") else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
         let destination = url.deletingLastPathComponent().appendingPathComponent(trimmed)
         try FileManager.default.moveItem(at: url, to: destination)
         return destination
