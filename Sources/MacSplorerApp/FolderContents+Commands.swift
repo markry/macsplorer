@@ -295,6 +295,47 @@ extension FolderContents {
     }
 }
 
+// MARK: - File promises (drags from Outlook, Mail, Photos, Messages, …)
+
+extension FolderContents {
+    private static let promiseQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.qualityOfService = .userInitiated
+        return queue
+    }()
+
+    /// The drag types that signal promised files, for `registerForDraggedTypes`.
+    static var promiseDragTypes: [NSPasteboard.PasteboardType] {
+        NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) }
+    }
+
+    /// File-promise receivers on the drag pasteboard. Apps like Outlook/Mail/Photos
+    /// drag out *promised* files — there's no file yet; the source writes it only
+    /// once a destination accepts the drop (which is why a plain file-URL read,
+    /// like ours was, comes back empty and the drop silently fails).
+    func promiseReceivers(from info: NSDraggingInfo) -> [NSFilePromiseReceiver] {
+        info.draggingPasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self], options: nil)
+            as? [NSFilePromiseReceiver] ?? []
+    }
+
+    /// Accept promised files: have each source write its file into `destination`
+    /// (off the main thread), then refresh + select what landed.
+    func receivePromisedFiles(_ receivers: [NSFilePromiseReceiver], into destination: URL) {
+        for receiver in receivers {
+            receiver.receivePromisedFiles(atDestination: destination, options: [:],
+                                          operationQueue: Self.promiseQueue) { [weak self] url, error in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if error != nil { NSSound.beep(); return }
+                    self.finishMutation(
+                        affected: [destination],
+                        selecting: self.samePath(destination, self.folder) ? [url.lastPathComponent] : [])
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Context menu (identical in the list, the grid, and the tree folders)
 
 extension FolderContents {

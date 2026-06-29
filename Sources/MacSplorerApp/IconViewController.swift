@@ -33,7 +33,7 @@ final class IconViewController: NSObject, FolderContentsPresenter {
         collectionView.backgroundColors = [.controlBackgroundColor]
         collectionView.register(IconItem.self,
                                 forItemWithIdentifier: IconItem.identifier)
-        collectionView.registerForDraggedTypes([.fileURL])
+        collectionView.registerForDraggedTypes([.fileURL] + FolderContents.promiseDragTypes)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
         collectionView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
 
@@ -170,7 +170,9 @@ extension IconViewController: NSCollectionViewDataSource, NSCollectionViewDelega
                         proposedIndexPath proposedDropIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
                         dropOperation proposedDropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
         proposedDropOperation.pointee = .before
-        return contents.dragOperation(for: draggingInfo)
+        let operation = contents.dragOperation(for: draggingInfo)
+        if operation != [] { return operation }
+        return contents.promiseReceivers(from: draggingInfo).isEmpty ? [] : .copy
     }
 
     func collectionView(_ collectionView: NSCollectionView, acceptDrop draggingInfo: NSDraggingInfo,
@@ -178,11 +180,16 @@ extension IconViewController: NSCollectionViewDataSource, NSCollectionViewDelega
         guard let folder = contents.folder else { return false }
         let urls = draggingInfo.draggingPasteboard.readObjects(
             forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        guard !urls.isEmpty else { return false }
-        let move = contents.dragOperation(for: draggingInfo) == .move
-        DispatchQueue.main.async { [weak self] in
-            self?.contents.performTransfer(urls, into: folder, move: move, selectLanded: true)
+        if !urls.isEmpty {
+            let move = contents.dragOperation(for: draggingInfo) == .move
+            DispatchQueue.main.async { [weak self] in
+                self?.contents.performTransfer(urls, into: folder, move: move, selectLanded: true)
+            }
+            return true
         }
+        let receivers = contents.promiseReceivers(from: draggingInfo)
+        guard !receivers.isEmpty else { return false }
+        contents.receivePromisedFiles(receivers, into: folder)
         return true
     }
 }

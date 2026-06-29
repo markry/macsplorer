@@ -27,7 +27,7 @@ final class DetailsTableController: NSObject, FolderContentsPresenter {
         tableView.fileActions = self
         tableView.action = #selector(handleSingleClick)
         tableView.doubleAction = #selector(handleDoubleClick)
-        tableView.registerForDraggedTypes([.fileURL])
+        tableView.registerForDraggedTypes([.fileURL] + FolderContents.promiseDragTypes)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
         tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
         let header = ResizingHeaderView()
@@ -427,7 +427,10 @@ extension DetailsTableController {
         if contents.samePath(destination, contents.folder) {
             tableView.setDropRow(-1, dropOperation: .on)
         }
-        return contents.dragOperation(for: info)
+        let operation = contents.dragOperation(for: info)
+        if operation != [] { return operation }
+        // Promised files (Outlook/Mail/Photos/…) are always copied in.
+        return contents.promiseReceivers(from: info).isEmpty ? [] : .copy
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int,
@@ -435,12 +438,18 @@ extension DetailsTableController {
         guard let destination = dropDestination(forRow: row, operation: dropOperation) else { return false }
         let urls = info.draggingPasteboard.readObjects(
             forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        guard !urls.isEmpty else { return false }
-        let move = contents.dragOperation(for: info) == .move
-        let selectLanded = contents.samePath(destination, contents.folder)
-        DispatchQueue.main.async { [weak self] in
-            self?.contents.performTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
+        if !urls.isEmpty {
+            let move = contents.dragOperation(for: info) == .move
+            let selectLanded = contents.samePath(destination, contents.folder)
+            DispatchQueue.main.async { [weak self] in
+                self?.contents.performTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
+            }
+            return true
         }
+        // No file URLs — accept promised files (Outlook, Mail, Photos, …).
+        let receivers = contents.promiseReceivers(from: info)
+        guard !receivers.isEmpty else { return false }
+        contents.receivePromisedFiles(receivers, into: destination)
         return true
     }
 
