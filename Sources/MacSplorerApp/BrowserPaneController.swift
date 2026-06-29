@@ -63,6 +63,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
     func openSelection() { contents.openSelected() }
     func makeNewFolder() { contents.makeNewFolder() }
+    func makeInternetShortcut() { contents.makeInternetShortcut() }
 
     /// Rebuild the details-pane columns from the persisted visible set (after the
     /// user toggles a column on/off).
