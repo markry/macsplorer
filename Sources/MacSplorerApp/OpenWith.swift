@@ -5,9 +5,12 @@ import UniformTypeIdentifiers
 /// the default app first. Each item carries its app URL as `representedObject`;
 /// the menu's `target`/`action` receives the click and opens the selection.
 enum OpenWith {
-    /// A populated submenu for `fileURL`. Items (except "Other…") carry the
+    /// A populated submenu for `fileURL`. The top items open the file once
+    /// (`openAction`); a trailing "Set Default for All …" submenu changes the
+    /// system default app for the file's kind (`setDefaultAction`). Items carry the
     /// chosen app's URL in `representedObject`; "Other…" carries `nil`.
-    static func submenu(for fileURL: URL, target: AnyObject, action: Selector) -> NSMenu {
+    static func submenu(for fileURL: URL, target: AnyObject,
+                        openAction: Selector, setDefaultAction: Selector) -> NSMenu {
         let menu = NSMenu()
         let defaultApp = NSWorkspace.shared.urlForApplication(toOpen: fileURL)
         var appURLs = NSWorkspace.shared.urlsForApplications(toOpen: fileURL)
@@ -15,16 +18,34 @@ enum OpenWith {
         // Default first, labelled; de-duplicated from the rest.
         if let defaultApp {
             appURLs.removeAll { $0 == defaultApp }
-            addItem(to: menu, app: defaultApp, suffix: " (default)", target: target, action: action)
+            addItem(to: menu, app: defaultApp, suffix: " (default)", target: target, action: openAction)
             if !appURLs.isEmpty { menu.addItem(.separator()) }
         }
-        for app in appURLs.sorted(by: { appName($0) < appName($1) }) {
-            addItem(to: menu, app: app, suffix: "", target: target, action: action)
+        let others = appURLs.sorted(by: { appName($0) < appName($1) })
+        for app in others {
+            addItem(to: menu, app: app, suffix: "", target: target, action: openAction)
         }
         menu.addItem(.separator())
-        let other = NSMenuItem(title: "Other…", action: action, keyEquivalent: "")
+        let other = NSMenuItem(title: "Other…", action: openAction, keyEquivalent: "")
         other.target = target
         menu.addItem(other)
+
+        // "Set Default for All …" — sets the system default app for this kind
+        // (Finder's Get Info ▸ "Change All").
+        let candidates = (defaultApp.map { [$0] } ?? []) + others
+        guard !candidates.isEmpty else { return menu }
+        let ext = fileURL.pathExtension
+        let title = ext.isEmpty ? "Set Default for All Files of This Kind"
+                                : "Set Default for All “.\(ext)” Files"
+        let setDefault = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let setDefaultMenu = NSMenu()
+        for app in candidates {
+            addItem(to: setDefaultMenu, app: app, suffix: app == defaultApp ? " (current)" : "",
+                    target: target, action: setDefaultAction)
+        }
+        setDefault.submenu = setDefaultMenu
+        menu.addItem(.separator())
+        menu.addItem(setDefault)
         return menu
     }
 

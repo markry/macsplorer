@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.7.2.
+> **Status:** v0.7.3.
 
 ## Features
 
@@ -35,15 +35,16 @@ expect:
   folders you jump to often. Right-click any folder to add/remove, or drag a
   folder onto it; drag within the list to reorder. Clicking a favorite jumps
   there and reveals it in the tree.
-- **Right-click context menus**, identical in both panes — Open, Open With ▸,
-  Cut / Copy / Paste, Duplicate, Rename, Move to Trash, **New ▸**, Open in
-  Terminal, Reveal in Finder, Copy Path, Add/Remove Favorites.
+- **Right-click context menus**, identical in both panes — Open, Open With ▸
+  (including **Set Default for All ".ext" Files**, the equivalent of Finder's Get
+  Info ▸ Change All), Cut / Copy / Paste, Duplicate, Rename, Move to Trash,
+  **New ▸**, Open in Terminal, Reveal in Finder, Copy Path, Add/Remove Favorites.
 - **New ▸ submenu** — create a new Folder, or an empty document (Text, Markdown,
   Rich Text, CSV, Word, PowerPoint) ready to name, or an **Internet Shortcut**
   (`.url`) from the URL on your clipboard — written in the cross-platform format
-  so it opens on macOS and in a Windows VM alike. **File ▸ New Internet Shortcut
-  from URL** does the same directly (also **Fn+Shift+S** / **Fn+Shift+U** while
-  MacSplorer is focused).
+  so it opens on macOS and in a Windows VM alike. The same set is available from
+  **File ▸ New ▸**, and the Internet Shortcut also has a keyboard shortcut
+  (**Fn+Shift+S** / **Fn+Shift+U** while MacSplorer is focused).
 - **File operations** — copy / cut / paste (with name-collision prompts),
   rename in place, duplicate, move to Trash (`⌫` or `⌘⌫`), new folder. Live
   folder watching keeps every window current.

@@ -46,6 +46,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func openSelection() { activePane?.openSelection() }
     func makeNewFolder() { activePane?.makeNewFolder() }
+    func makeNewDocument(_ type: NewDocumentType) { activePane?.makeNewDocument(type) }
     func makeInternetShortcut() { activePane?.makeInternetShortcut() }
     @objc func openInTerminal() { activePane?.openInTerminal() }
     var canOpenInTerminal: Bool { activePane?.canOpenInTerminal ?? false }
@@ -89,9 +90,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if focusAddress { pane.focusAddressField() }
     }
 
-    /// Close the frontmost tab (File ▸ Close Tab / ⌘W). Closing the last tab
-    /// closes the window.
-    func closeActiveTab() { closeTab(at: activeIndex) }
+    /// Number of open tabs in this window.
+    var tabCount: Int { panes.count }
+
+    /// Close the frontmost tab (File ▸ Close Tab / ⌘W). Only meaningful with more
+    /// than one tab — the menu item is disabled otherwise, so this won't close the
+    /// whole window out from under a single pane.
+    func closeActiveTab() {
+        guard panes.count > 1 else { return }
+        closeTab(at: activeIndex)
+    }
 
     private func selectTab(at index: Int) {
         guard panes.indices.contains(index) else { return }
