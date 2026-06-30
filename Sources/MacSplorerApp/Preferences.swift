@@ -64,6 +64,13 @@ final class Preferences {
         set { defaults.set(newValue, forKey: "skipCloudInSizeScan") }
     }
 
+    /// Show the startup disk ("/") as a tree root. Off by default — Home and
+    /// Volumes cover most needs, and the boot disk is reachable via Volumes.
+    var showStartupDiskRoot: Bool {
+        get { defaults.bool(forKey: "showStartupDiskRoot") }
+        set { defaults.set(newValue, forKey: "showStartupDiskRoot") }
+    }
+
     /// User-chosen height of the Favorites pane (0 = unset → auto-fit to ~6).
     /// Set when the user drags the divider.
     var favoritesPaneHeight: Double {

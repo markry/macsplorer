@@ -15,7 +15,32 @@ enum FolderCommand {
 /// folder's URL via `onSelect`.
 final class FolderTreeController: NSObject {
     private let outlineView: FolderOutlineView
-    private let roots: [FSItem]
+    private var roots: [FSItem]
+
+    /// Tree roots: Home, optionally the startup disk ("/"), and /Volumes.
+    /// /Volumes is its own root because it carries the `hidden` flag — it never
+    /// appears under "/" (the tree skips hidden items) yet is where mounted volumes
+    /// live and a common navigation target; as a root, volume paths reveal right.
+    private static func makeRoots() -> [FSItem] {
+        var roots = [FSItem(url: FileManager.default.homeDirectoryForCurrentUser)]
+        if Preferences.shared.showStartupDiskRoot {
+            roots.append(FSItem(url: URL(fileURLWithPath: "/")))
+        }
+        roots.append(FSItem(url: URL(fileURLWithPath: "/Volumes")))
+        return roots
+    }
+
+    /// Rebuild the roots if the startup-disk preference changed, then re-reveal
+    /// `url`. Cheap no-op when the root set is unchanged (keeps expansion state).
+    func applyRootPreferences(revealing url: URL?) {
+        let desired = (Preferences.shared.showStartupDiskRoot
+            ? [FileManager.default.homeDirectoryForCurrentUser.path, "/", "/Volumes"]
+            : [FileManager.default.homeDirectoryForCurrentUser.path, "/Volumes"])
+        guard roots.map({ $0.url.path }) != desired else { return }
+        roots = FolderTreeController.makeRoots()
+        outlineView.reloadData()
+        if let url { reveal(url) }
+    }
 
     /// Called when the user selects a folder in the tree.
     var onSelect: ((URL) -> Void)?
@@ -76,10 +101,7 @@ final class FolderTreeController: NSObject {
 
     init(outlineView: FolderOutlineView) {
         self.outlineView = outlineView
-        self.roots = [
-            FSItem(url: FileManager.default.homeDirectoryForCurrentUser),
-            FSItem(url: URL(fileURLWithPath: "/")),
-        ]
+        self.roots = FolderTreeController.makeRoots()
         super.init()
         outlineView.dataSource = self
         outlineView.delegate = self

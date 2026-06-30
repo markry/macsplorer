@@ -234,6 +234,24 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
         }
         return fileActions?.contextMenu(forClickedRow: clicked)
     }
+
+    /// Right-button drag copies (Explorer-style); a plain right-click (no drag)
+    /// shows the context menu as usual. We take over `rightMouseDown` so we can
+    /// tell the two apart before either is committed.
+    override func rightMouseDown(with event: NSEvent) {
+        let clicked = row(at: convert(event.locationInWindow, from: nil))
+        if clicked >= 0, !selectedRowIndexes.contains(clicked) {
+            selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false)
+        }
+        if let dragEvent = waitForRightDrag(start: event),
+           let urls = fileActions?.selectedFileURLs, !urls.isEmpty {
+            beginRightDrag(of: urls, with: dragEvent)
+            return
+        }
+        if let menu = menu(for: event) {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+        }
+    }
 }
 
 extension HoverTableView: QLPreviewPanelDataSource, QLPreviewPanelDelegate {

@@ -181,6 +181,13 @@ extension IconViewController: NSCollectionViewDataSource, NSCollectionViewDelega
         let urls = draggingInfo.draggingPasteboard.readObjects(
             forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
         if !urls.isEmpty {
+            if RightDragSource.shared.isActive {
+                let point = collectionView.convert(draggingInfo.draggingLocation, from: nil)
+                DispatchQueue.main.async { [weak self] in
+                    self?.contents.showRightDropMenu(urls: urls, into: folder, at: point, in: collectionView)
+                }
+                return true
+            }
             let move = contents.dragOperation(for: draggingInfo) == .move
             DispatchQueue.main.async { [weak self] in
                 self?.contents.performTransfer(urls, into: folder, move: move, selectLanded: true)
@@ -262,6 +269,23 @@ final class IconCollectionView: NSCollectionView {
             deselectAll(nil)
         }
         return onContextMenu?(index)
+    }
+
+    /// Right-button drag copies (Explorer-style); a plain right-click shows the
+    /// context menu.
+    override func rightMouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if let indexPath = indexPathForItem(at: point), !selectionIndexPaths.contains(indexPath) {
+            selectionIndexPaths = [indexPath]
+        }
+        if let dragEvent = waitForRightDrag(start: event),
+           let urls = selectedURLs?(), !urls.isEmpty {
+            beginRightDrag(of: urls, with: dragEvent)
+            return
+        }
+        if let menu = menu(for: event) {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+        }
     }
 
     override func keyDown(with event: NSEvent) {

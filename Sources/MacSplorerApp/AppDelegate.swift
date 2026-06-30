@@ -399,6 +399,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         upItem.target = self
         viewMenu.addItem(upItem)
 
+        let startupDisk = NSMenuItem(title: "Show Startup Disk",
+                                     action: #selector(toggleStartupDiskRoot(_:)),
+                                     keyEquivalent: "")
+        startupDisk.target = self
+        viewMenu.addItem(startupDisk)
+
         let singleClick = NSMenuItem(title: "Single-Click to Open",
                                      action: #selector(toggleSingleClick(_:)),
                                      keyEquivalent: "")
@@ -573,6 +579,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         windowControllers.forEach { $0.applyPreferences() }
     }
 
+    @objc private func toggleStartupDiskRoot(_ sender: Any?) {
+        Preferences.shared.showStartupDiskRoot.toggle()
+        windowControllers.forEach { $0.applyPreferences() }
+    }
+
     @objc private func togglePromptOnCollision(_ sender: Any?) {
         Preferences.shared.promptOnCollision.toggle()
     }
@@ -603,6 +614,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             menuItem.state = Preferences.shared.singleClickToOpen ? .on : .off
         case #selector(toggleParentItem(_:)):
             menuItem.state = Preferences.shared.showParentItem ? .on : .off
+        case #selector(toggleStartupDiskRoot(_:)):
+            menuItem.state = Preferences.shared.showStartupDiskRoot ? .on : .off
         case #selector(togglePromptOnCollision(_:)):
             menuItem.state = Preferences.shared.promptOnCollision ? .on : .off
         case #selector(toggleSkipCloud(_:)):
