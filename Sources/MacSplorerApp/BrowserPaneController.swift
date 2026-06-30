@@ -61,6 +61,21 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
     // MARK: - Host-facing commands
 
+    /// Route a folder context-menu command (from the tree or Favorites) to the
+    /// shared model.
+    private func handleFolderCommand(_ command: FolderCommand, url: URL) {
+        switch command {
+        case .cut: contents.cutFolder(url)
+        case .copy: contents.copyFolder(url)
+        case .duplicate: contents.duplicateFolder(url)
+        case .trash: contents.trashFolder(url)
+        case .rename: contents.renameFolder(url)
+        case .newFolder: contents.makeNewFolder(in: url)
+        case .newDocument(let type): contents.makeNewDocument(type, in: url)
+        case .internetShortcut: contents.makeInternetShortcut(in: url)
+        }
+    }
+
     func openSelection() { contents.openSelected() }
     func makeNewFolder() { contents.makeNewFolder() }
     func makeNewDocument(_ type: NewDocumentType) { contents.makeNewDocument(type) }
@@ -396,20 +411,14 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         // Clicking a Favorite (in the pinned pane above) jumps there: show it AND
         // expand/reveal it in the tree below.
         favoritesController.onSelect = { [weak self] url in self?.navigate(to: url) }
-        // Tree folder commands route to the shared model, which owns the file-op
-        // implementations — so the left and right folder menus behave identically.
+        // Folder commands from the tree AND the Favorites pane route to the shared
+        // model, which owns the file-op implementations — so every folder menu
+        // (left tree, Favorites, right pane) behaves identically.
         treeController.onFolderCommand = { [weak self] command, url in
-            guard let self else { return }
-            switch command {
-            case .cut: self.contents.cutFolder(url)
-            case .copy: self.contents.copyFolder(url)
-            case .duplicate: self.contents.duplicateFolder(url)
-            case .trash: self.contents.trashFolder(url)
-            case .rename: self.contents.renameFolder(url)
-            case .newFolder: self.contents.makeNewFolder(in: url)
-            case .newDocument(let type): self.contents.makeNewDocument(type, in: url)
-            case .internetShortcut: self.contents.makeInternetShortcut(in: url)
-            }
+            self?.handleFolderCommand(command, url: url)
+        }
+        favoritesController.onFolderCommand = { [weak self] command, url in
+            self?.handleFolderCommand(command, url: url)
         }
         contents.onOpenFolder = { [weak self] url in self?.navigate(to: url) }
         contents.onStatus = { [weak self] status in

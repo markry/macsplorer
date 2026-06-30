@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.7.5.
+> **Status:** v0.7.6.
 
 ## Features
 
@@ -17,6 +17,8 @@ expect:
 - **Two panes** — a lazy, expandable folder tree and a details list, split and
   resizable. The tree's roots are **Home** and **Volumes** (mounted disks);
   **View ▸ Show Startup Disk** adds the `/` root when you want it (off by default).
+  Right-click a mounted volume to **Eject** it; the tree updates live as disks
+  mount and unmount.
 - **List & icon views** — the right pane shows either a details **list** or a
   thumbnail **icon grid** (content previews for images, PDFs, and video; file-
   type icons otherwise). Switch with the three-icon control at the right of the
@@ -36,10 +38,12 @@ expect:
   folders you jump to often. Right-click any folder to add/remove, or drag a
   folder onto it; drag within the list to reorder. Clicking a favorite jumps
   there and reveals it in the tree.
-- **Right-click context menus**, identical in both panes — Open, Open With ▸
-  (including **Set Default for All ".ext" Files**, the equivalent of Finder's Get
-  Info ▸ Change All), Cut / Copy / Paste, Duplicate, Rename, Move to Trash,
-  **New ▸**, Open in Terminal, Reveal in Finder, Copy Path, Add/Remove Favorites.
+- **Right-click context menus** — the same folder menu across the list, icon
+  grid, folder tree, and Favorites: Open, Open With ▸ (including **Set Default for
+  All ".ext" Files**, the equivalent of Finder's Get Info ▸ Change All), Cut /
+  Copy / Paste, Duplicate, Rename, Move to Trash, **New ▸**, Open in Terminal,
+  Reveal in Finder, Copy Path, Add/Remove Favorites, and **Eject** for mounted
+  volumes.
 - **New ▸ submenu** — create a new Folder, or an empty document (Text, Markdown,
   Rich Text, CSV, Word, PowerPoint) ready to name, or an **Internet Shortcut**
   (`.url`) from the URL on your clipboard — written in the cross-platform format

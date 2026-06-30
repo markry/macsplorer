@@ -461,6 +461,10 @@ extension FolderContents {
             } else {
                 add(menu, "Add to Favorites", #selector(ctxAddFavorite(_:)), target)
             }
+            if FolderContextMenu.isEjectableVolume(item.url) {
+                menu.addItem(.separator())
+                add(menu, "Eject", #selector(ctxEject(_:)), target)
+            }
         }
         return menu
     }
@@ -498,6 +502,9 @@ extension FolderContents {
     }
     @objc func ctxRemoveFavorite(_ sender: Any?) {
         if let url = selectedFolderForFavorite() { Favorites.shared.remove(url) }
+    }
+    @objc func ctxEject(_ sender: Any?) {
+        if let url = selectedFolderForFavorite() { FolderContextMenu.eject(url) }
     }
     @objc func ctxOpenInNewWindow(_ sender: Any?) {
         if let url = selectedFolderForFavorite() {

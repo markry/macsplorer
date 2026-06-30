@@ -56,9 +56,6 @@ final class FolderTreeController: NSObject {
     /// Items whose subfolder-check is currently running, to avoid duplicate work.
     private var pendingSubfolderChecks = Set<ObjectIdentifier>()
 
-    /// The folder the context menu was opened on (the right-clicked row).
-    private var clickedFolder: FSItem?
-
     /// Determine off the main thread whether `item` actually has subfolders, so
     /// the disclosure triangle only appears when expanding would do something.
     /// Called from `isItemExpandable`, so it only ever runs for nodes the tree is
@@ -110,14 +107,30 @@ final class FolderTreeController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(folderDidChange(_:)),
             name: FolderChange.didChange, object: nil)
+        // Refresh the Volumes node when a disk mounts/unmounts/renames (eject,
+        // plugging in a drive, mounting a DMG…) — these come from NSWorkspace's
+        // own center, not the default one.
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name: NSNotification.Name in [NSWorkspace.didMountNotification,
+                                          NSWorkspace.didUnmountNotification,
+                                          NSWorkspace.didRenameVolumeNotification] {
+            workspace.addObserver(self, selector: #selector(volumesChanged), name: name, object: nil)
+        }
     }
 
-    deinit { NotificationCenter.default.removeObserver(self) }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
 
     @objc private func folderDidChange(_ note: Notification) {
         for folder in FolderChange.folders(from: note) {
             refreshSubtree(at: folder)
         }
+    }
+
+    @objc private func volumesChanged(_ note: Notification) {
+        refreshSubtree(at: URL(fileURLWithPath: "/Volumes"))
     }
 
     /// Expand + select the Home root (row 0). Done after the coordinator wires
@@ -266,96 +279,20 @@ extension FolderTreeController {
 
     private func contextMenu(forRow row: Int) -> NSMenu? {
         guard let item = clickedItem(forRow: row) else { return nil }
-        clickedFolder = item
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        add(menu, "Open", #selector(ctxOpen(_:)))
-        add(menu, "Open in New Window", #selector(ctxOpenInNewWindow(_:)))
-        add(menu, "Open in Terminal", #selector(ctxTerminal(_:)))
-
-        // Full menu, identical to the details pane's.
-        menu.addItem(NewDocument.submenuItem(for: item.url, target: self,
-                                             action: #selector(ctxNew(_:))))
-        menu.addItem(.separator())
-        add(menu, "Cut", #selector(ctxCut(_:)))
-        add(menu, "Copy", #selector(ctxCopy(_:)))
-        add(menu, "Duplicate", #selector(ctxDuplicate(_:)))
-        menu.addItem(.separator())
-        add(menu, "Rename", #selector(ctxRename(_:)))
-        add(menu, "Move to Trash", #selector(ctxTrash(_:)))
-        menu.addItem(.separator())
-        add(menu, "Reveal in Finder", #selector(ctxReveal(_:)))
-        add(menu, "Copy Path", #selector(ctxCopyPath(_:)))
-        menu.addItem(.separator())
-        if Favorites.shared.contains(item.url) {
-            add(menu, "Remove from Favorites", #selector(ctxRemoveFavorite(_:)))
-        } else {
-            add(menu, "Add to Favorites", #selector(ctxAddFavorite(_:)))
-        }
-        return menu
+        return FolderContextMenu.make(for: item.url, target: self,
+                                      action: #selector(handleFolderMenu(_:)),
+                                      newAction: #selector(handleFolderNew(_:)))
     }
 
-    private func add(_ menu: NSMenu, _ title: String, _ action: Selector, enabled: Bool = true) {
-        let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: "")
-        menuItem.target = self
-        menuItem.isEnabled = enabled
-        menu.addItem(menuItem)
+    @objc private func handleFolderMenu(_ sender: NSMenuItem) {
+        guard let action = sender.representedObject as? FolderMenuAction else { return }
+        FolderContextMenu.perform(action,
+            open: { [weak self] in self?.onSelect?($0) },
+            command: { [weak self] in self?.onFolderCommand?($0, $1) })
     }
 
-    @objc private func ctxOpen(_ sender: Any?) {
-        guard let folder = clickedFolder else { return }
-        onSelect?(folder.url)
-    }
-
-    @objc private func ctxAddFavorite(_ sender: Any?) {
-        guard let folder = clickedFolder else { return }
-        Favorites.shared.add(folder.url)
-    }
-
-    @objc private func ctxRemoveFavorite(_ sender: Any?) {
-        guard let folder = clickedFolder else { return }
-        Favorites.shared.remove(folder.url)
-    }
-
-    @objc private func ctxOpenInNewWindow(_ sender: Any?) {
-        guard let folder = clickedFolder else { return }
-        (NSApp.delegate as? AppDelegate)?.openWindow(showing: folder.url)
-    }
-
-    @objc private func ctxTerminal(_ sender: Any?) {
-        guard let folder = clickedFolder else { return }
-        Shell.openInTerminal(folder.url)
-    }
-
-    // File operations route to the details pane (which owns the implementations).
-    @objc private func ctxCut(_ sender: Any?) { sendCommand(.cut) }
-    @objc private func ctxCopy(_ sender: Any?) { sendCommand(.copy) }
-    @objc private func ctxDuplicate(_ sender: Any?) { sendCommand(.duplicate) }
-    @objc private func ctxRename(_ sender: Any?) { sendCommand(.rename) }
-    @objc private func ctxTrash(_ sender: Any?) { sendCommand(.trash) }
-
-    @objc private func ctxNew(_ sender: NSMenuItem) {
+    @objc private func handleFolderNew(_ sender: NSMenuItem) {
         guard let choice = sender.representedObject as? NewMenuChoice else { return }
-        switch choice.kind {
-        case .folder: onFolderCommand?(.newFolder, choice.directory)
-        case .document(let type): onFolderCommand?(.newDocument(type), choice.directory)
-        case .internetShortcut: onFolderCommand?(.internetShortcut, choice.directory)
-        }
-    }
-
-    private func sendCommand(_ command: FolderCommand) {
-        guard let folder = clickedFolder else { return }
-        onFolderCommand?(command, folder.url)
-    }
-
-    @objc private func ctxReveal(_ sender: Any?) {
-        guard let folder = clickedFolder else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([folder.url])
-    }
-
-    @objc private func ctxCopyPath(_ sender: Any?) {
-        guard let folder = clickedFolder else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(folder.url.path, forType: .string)
+        FolderContextMenu.performNew(choice) { [weak self] in self?.onFolderCommand?($0, $1) }
     }
 }

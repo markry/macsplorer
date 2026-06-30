@@ -45,6 +45,9 @@ final class FavoritesController: NSObject {
     /// Click a favorite → navigate there (the coordinator also reveals it in the
     /// tree below).
     var onSelect: ((URL) -> Void)?
+    /// File-operation commands from the context menu, routed to the shared model
+    /// (same handler as the tree) so the menu is fully functional.
+    var onFolderCommand: ((FolderCommand, URL) -> Void)?
 
     let view = NSView()
     /// Fired when the favorites count changes, so the host can re-fit the
@@ -68,7 +71,6 @@ final class FavoritesController: NSObject {
 
     private let tableView = FavoritesTableView()
     private var favorites: [URL] = []
-    private var clickedURL: URL?
 
     static let rowHeight: CGFloat = 22
     /// Space above the list (the "Favorites" header + gaps).
@@ -180,40 +182,22 @@ final class FavoritesController: NSObject {
 
     private func contextMenu(forRow row: Int) -> NSMenu? {
         guard row >= 0, row < favorites.count else { return nil }
-        clickedURL = favorites[row]
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        add(menu, "Open", #selector(favOpen(_:)))
-        add(menu, "Open in New Window", #selector(favOpenInNewWindow(_:)))
-        add(menu, "Open in Terminal", #selector(favTerminal(_:)))
-        menu.addItem(.separator())
-        add(menu, "Reveal in Finder", #selector(favReveal(_:)))
-        add(menu, "Copy Path", #selector(favCopyPath(_:)))
-        menu.addItem(.separator())
-        add(menu, "Remove from Favorites", #selector(favRemove(_:)))
-        return menu
+        return FolderContextMenu.make(for: favorites[row], target: self,
+                                      action: #selector(handleFolderMenu(_:)),
+                                      newAction: #selector(handleFolderNew(_:)))
     }
 
-    private func add(_ menu: NSMenu, _ title: String, _ action: Selector) {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-        item.target = self
-        menu.addItem(item)
+    @objc private func handleFolderMenu(_ sender: NSMenuItem) {
+        guard let action = sender.representedObject as? FolderMenuAction else { return }
+        FolderContextMenu.perform(action,
+            open: { [weak self] in self?.onSelect?($0) },
+            command: { [weak self] in self?.onFolderCommand?($0, $1) })
     }
 
-    @objc private func favOpen(_ sender: Any?) { if let url = clickedURL { onSelect?(url) } }
-    @objc private func favOpenInNewWindow(_ sender: Any?) {
-        if let url = clickedURL { (NSApp.delegate as? AppDelegate)?.openWindow(showing: url) }
+    @objc private func handleFolderNew(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? NewMenuChoice else { return }
+        FolderContextMenu.performNew(choice) { [weak self] in self?.onFolderCommand?($0, $1) }
     }
-    @objc private func favTerminal(_ sender: Any?) { if let url = clickedURL { Shell.openInTerminal(url) } }
-    @objc private func favReveal(_ sender: Any?) {
-        if let url = clickedURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-    }
-    @objc private func favCopyPath(_ sender: Any?) {
-        guard let url = clickedURL else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url.path, forType: .string)
-    }
-    @objc private func favRemove(_ sender: Any?) { if let url = clickedURL { Favorites.shared.remove(url) } }
 }
 
 extension FavoritesController: NSTableViewDataSource, NSTableViewDelegate {
