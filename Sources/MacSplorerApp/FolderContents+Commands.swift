@@ -226,6 +226,7 @@ extension FolderContents {
         var landed: [String] = []
         var affected: Set<URL> = [destination]
         var applyToAll: CollisionChoice?
+        var failure: (name: String, error: Error)?
         let ask = Preferences.shared.promptOnCollision
 
         for url in urls {
@@ -266,9 +267,22 @@ extension FolderContents {
                 if move { affected.insert(url.deletingLastPathComponent()) }
             } catch {
                 NSSound.beep()
+                if failure == nil { failure = (url.lastPathComponent, error) }
             }
         }
         finishMutation(affected: affected, selecting: selectLanded ? landed : [])
+        if let failure { reportTransferFailure(failure.name, error: failure.error, moving: move) }
+    }
+
+    /// Surface a copy/move failure (out of space, permissions, …) instead of just
+    /// the beep — the error's own message is usually clear ("not enough space…").
+    private func reportTransferFailure(_ name: String, error: Error, moving: Bool) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn’t \(moving ? "move" : "copy") “\(name)”."
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func askCollision(name: String, in destination: URL,
@@ -334,6 +348,63 @@ extension FolderContents {
                 }
             }
         }
+    }
+}
+
+// MARK: - Right-button drag (Explorer-style Copy/Move-on-drop menu)
+
+/// Captured drop intent for a Copy/Move menu item.
+final class RightDropInfo: NSObject {
+    let urls: [URL]
+    let destination: URL
+    let move: Bool
+    init(urls: [URL], destination: URL, move: Bool) {
+        self.urls = urls; self.destination = destination; self.move = move
+    }
+}
+
+extension FolderContents {
+    /// Present the Copy Here / Move Here / Cancel menu for a right-drag drop. The
+    /// default (bold, under the cursor) is the *opposite* of what a left-drag would
+    /// do here — copy on the same volume, move across volumes — mirroring Explorer.
+    func showRightDropMenu(urls: [URL], into destination: URL, at point: NSPoint, in view: NSView) {
+        guard !urls.isEmpty else { return }
+        let crossVolume = !sameVolume(urls[0], as: destination)
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false   // keep "Cancel" (no action) from greying out
+        let copyItem = NSMenuItem(title: "Copy Here",
+                                  action: #selector(performRightDrop(_:)), keyEquivalent: "")
+        copyItem.target = self
+        copyItem.representedObject = RightDropInfo(urls: urls, destination: destination, move: false)
+        let moveItem = NSMenuItem(title: "Move Here",
+                                  action: #selector(performRightDrop(_:)), keyEquivalent: "")
+        moveItem.target = self
+        moveItem.representedObject = RightDropInfo(urls: urls, destination: destination, move: true)
+
+        let defaultItem = crossVolume ? moveItem : copyItem
+        defaultItem.attributedTitle = NSAttributedString(
+            string: defaultItem.title,
+            attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
+
+        menu.addItem(copyItem)
+        menu.addItem(moveItem)
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Cancel", action: nil, keyEquivalent: ""))
+        menu.popUp(positioning: defaultItem, at: point, in: view)
+    }
+
+    @objc func performRightDrop(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? RightDropInfo else { return }
+        performTransfer(info.urls, into: info.destination, move: info.move, selectLanded: true)
+    }
+
+    /// Whether `a` and `b` live on the same mounted volume.
+    private func sameVolume(_ a: URL, as b: URL) -> Bool {
+        let av = try? a.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier
+        let bv = try? b.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier
+        guard let av, let bv else { return true }   // unknown → treat as same (copy default)
+        return av.isEqual(bv)
     }
 }
 

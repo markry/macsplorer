@@ -129,6 +129,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         contents.showUpItem = prefs.showParentItem
         detailsController.singleClickToOpen = prefs.singleClickToOpen
         contents.reload()
+        treeController.applyRootPreferences(revealing: contents.folder)
         treeController.refresh(revealing: contents.folder)
         applyFavoritesVisibility()
     }

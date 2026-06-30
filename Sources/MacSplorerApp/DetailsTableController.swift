@@ -439,6 +439,14 @@ extension DetailsTableController {
         let urls = info.draggingPasteboard.readObjects(
             forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
         if !urls.isEmpty {
+            // A right-button drag asks the user copy vs move on drop.
+            if RightDragSource.shared.isActive {
+                let point = tableView.convert(info.draggingLocation, from: nil)
+                DispatchQueue.main.async { [weak self] in
+                    self?.contents.showRightDropMenu(urls: urls, into: destination, at: point, in: tableView)
+                }
+                return true
+            }
             let move = contents.dragOperation(for: info) == .move
             let selectLanded = contents.samePath(destination, contents.folder)
             DispatchQueue.main.async { [weak self] in

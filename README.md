@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.7.4.
+> **Status:** v0.7.5.
 
 ## Features
 
@@ -15,7 +15,8 @@ and where macOS conventions apply, Finder. The essentials work the way you'd
 expect:
 
 - **Two panes** — a lazy, expandable folder tree and a details list, split and
-  resizable.
+  resizable. The tree's roots are **Home** and **Volumes** (mounted disks);
+  **View ▸ Show Startup Disk** adds the `/` root when you want it (off by default).
 - **List & icon views** — the right pane shows either a details **list** or a
   thumbnail **icon grid** (content previews for images, PDFs, and video; file-
   type icons otherwise). Switch with the three-icon control at the right of the
@@ -47,7 +48,11 @@ expect:
   (**Fn+Shift+S** / **Fn+Shift+U** while MacSplorer is focused).
 - **File operations** — copy / cut / paste (with name-collision prompts),
   rename in place, duplicate, move to Trash (`⌫` or `⌘⌫`), new folder. Live
-  folder watching keeps every window current.
+  folder watching keeps every window current. A failed transfer (out of space,
+  permissions, …) reports the reason rather than failing silently.
+- **Drag to move, ⌥-drag to copy** — and, Windows-Explorer-style, **right-button
+  drag** drops a **Copy Here / Move Here** menu on release, defaulting to the
+  opposite of the left-drag default (copy within a volume, move across volumes).
 - **Quick Look** — press the spacebar to preview the selection, just like
   Finder.
 - **Folder sizes** — **File ▸ Calculate Folder Sizes…** runs a parallel, low-
