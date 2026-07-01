@@ -51,7 +51,7 @@ echo "==> zipping the stapled app -> $ZIP"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
-echo "==> uploading asset and publishing release $TAG"
-gh release upload "$TAG" "$ZIP" --clobber
+echo "==> uploading assets and publishing release $TAG"
+gh release upload "$TAG" "$ZIP" scripts/upgrade.sh --clobber
 gh release edit "$TAG" --draft=false
 echo "==> published: $(gh release view "$TAG" --json url -q .url)"
