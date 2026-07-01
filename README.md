@@ -8,6 +8,23 @@ Windows.
 
 > **Status:** v0.7.6.
 
+## Download
+
+Grab the latest build from the
+[**Releases**](https://github.com/markry/macsplorer/releases/latest) page:
+download `MacSplorer-X.Y.Z.zip`, unzip it, and drag **MacSplorer.app** into
+`/Applications`. It's Developer-ID signed and notarized, so it opens without
+Gatekeeper warnings — no Xcode or build step required.
+
+To update later, download the new zip and either drag-replace the app, or run
+the `upgrade.sh` attached to each release (it quits the app, verifies the new
+build's signature + notarization, swaps it in, and relaunches — preferences are
+preserved):
+
+```sh
+bash upgrade.sh   # uses the newest MacSplorer-*.zip in ~/Downloads
+```
+
 ## Features
 
 Most of MacSplorer should be self-explanatory if you've used Windows Explorer,
