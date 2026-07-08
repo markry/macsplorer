@@ -154,6 +154,31 @@ public final class FSItem {
         cachedHasSubfolders = nil
     }
 
+    /// Re-read folder children from disk but REUSE the existing child instances
+    /// for entries that still exist — so any expanded subtrees (tracked by
+    /// NSOutlineView via object identity) survive the refresh, and only genuinely
+    /// new folders get fresh (collapsed) nodes. Returns whether the set of child
+    /// names changed, so callers can skip a needless `reloadItem`.
+    ///
+    /// This is what lets the tree pick up folders created outside the app (e.g.
+    /// cloud sync) without the jarring full-collapse that `invalidateChildren`
+    /// would cause.
+    @discardableResult
+    public func refreshFolderChildren(includeHidden: Bool) -> Bool {
+        let previous = cachedFolderChildren ?? []
+        let existingByName = Dictionary(previous.map { ($0.name, $0) },
+                                        uniquingKeysWith: { first, _ in first })
+        let merged = FSItem.contents(of: url, includeHidden: includeHidden)
+            .filter { $0.isDirectory && !$0.isPackage }
+            .map { existingByName[$0.name] ?? $0 }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        let changed = merged.map { $0.name } != previous.map { $0.name }
+        cachedFolderChildren = merged
+        cachedChildrenIncludeHidden = includeHidden
+        cachedHasSubfolders = nil   // membership changed → recompute the triangle
+        return changed
+    }
+
     /// Gate for tree expansion: only a real (non-package) directory can ever show
     /// a disclosure triangle. Whether one is *actually* shown also depends on
     /// `knownHasSubfolders`, determined lazily off the main thread.
