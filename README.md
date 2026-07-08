@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.7.6.
+> **Status:** v0.7.7.
 
 ## Download
 

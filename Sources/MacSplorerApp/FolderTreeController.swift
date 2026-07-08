@@ -116,6 +116,13 @@ final class FolderTreeController: NSObject {
                                           NSWorkspace.didRenameVolumeNotification] {
             workspace.addObserver(self, selector: #selector(volumesChanged), name: name, object: nil)
         }
+        // When the app returns to the foreground, re-read the expanded folders so
+        // changes made while we were in the background — most notably folders
+        // created by cloud sync (OneDrive/Drive) or another app — show up in the
+        // tree without the user having to navigate into them.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appBecameActive),
+            name: NSApplication.didBecomeActiveNotification, object: nil)
     }
 
     deinit {
@@ -131,6 +138,26 @@ final class FolderTreeController: NSObject {
 
     @objc private func volumesChanged(_ note: Notification) {
         refreshSubtree(at: URL(fileURLWithPath: "/Volumes"))
+    }
+
+    @objc private func appBecameActive() {
+        refreshExpandedNodes()
+    }
+
+    /// Re-read every currently-expanded folder from disk and reload the ones whose
+    /// contents changed. Cheap: it only touches nodes the user has expanded (what's
+    /// on screen), and reuses child instances so expansion state is preserved.
+    private func refreshExpandedNodes() {
+        func walk(_ item: FSItem) {
+            guard outlineView.isItemExpanded(item) else { return }
+            if item.refreshFolderChildren(includeHidden: showHiddenFiles) {
+                outlineView.reloadItem(item, reloadChildren: true)
+            }
+            for child in item.folderChildren(includeHidden: showHiddenFiles) {
+                walk(child)
+            }
+        }
+        for root in roots { walk(root) }
     }
 
     /// Expand + select the Home root (row 0). Done after the coordinator wires
@@ -183,11 +210,23 @@ final class FolderTreeController: NSObject {
         var chain = [root]
         var current = root
         for component in targetComponents[rootComponents.count...] {
-            guard let next = current.folderChildren(includeHidden: showHiddenFiles)
-                .first(where: { $0.url.lastPathComponent.caseInsensitiveCompare(component) == .orderedSame })
-            else { break }
-            chain.append(next)
-            current = next
+            func match() -> FSItem? {
+                current.folderChildren(includeHidden: showHiddenFiles)
+                    .first { $0.url.lastPathComponent.caseInsensitiveCompare(component) == .orderedSame }
+            }
+            var next = match()
+            if next == nil {
+                // Cached children may predate a folder created outside the app
+                // (e.g. cloud sync). Re-read this node once and retry before
+                // giving up, so revealing a just-synced folder still lands.
+                if current.refreshFolderChildren(includeHidden: showHiddenFiles) {
+                    outlineView.reloadItem(current, reloadChildren: true)
+                    next = match()
+                }
+            }
+            guard let found = next else { break }
+            chain.append(found)
+            current = found
         }
         return chain
     }
