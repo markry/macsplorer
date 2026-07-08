@@ -89,6 +89,14 @@ final class FavoritesController: NSObject {
         favorites = Favorites.shared.folders()
         tableView.dataSource = self
         tableView.delegate = self
+        // Navigate on the click action too, not just selection *changes*: clicking
+        // an already-selected favorite (e.g. you clicked "Code", browsed elsewhere
+        // via the tree — which leaves this list's highlight on "Code" — then clicked
+        // "Code" again) fires no selectionDidChange, so it would otherwise do
+        // nothing. This fires on every click; the redundant call on a fresh click is
+        // a harmless no-op since navigate/showFolder are idempotent.
+        tableView.target = self
+        tableView.action = #selector(rowClicked)
         tableView.onContextMenu = { [weak self] row in self?.contextMenu(forRow: row) }
         tableView.registerForDraggedTypes([.fileURL])
         tableView.reloadData()
@@ -215,6 +223,14 @@ extension FavoritesController: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = tableView.selectedRow
+        guard row >= 0, row < favorites.count else { return }
+        onSelect?(favorites[row])
+    }
+
+    /// A click on a favorite row — fires even when the row was already selected,
+    /// so re-clicking a favorite always re-navigates (unlike selectionDidChange).
+    @objc private func rowClicked() {
+        let row = tableView.clickedRow
         guard row >= 0, row < favorites.count else { return }
         onSelect?(favorites[row])
     }
