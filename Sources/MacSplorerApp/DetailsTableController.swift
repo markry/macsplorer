@@ -341,6 +341,8 @@ extension DetailsTableController: HoverTableFileActions {
 // MARK: - Inline rename (in the name cell)
 
 extension DetailsTableController: NSTextFieldDelegate {
+    var presentingWindow: NSWindow? { tableView.window }
+
     func beginRename(at row: Int) {
         guard contents.item(at: row) != nil,
               let nameColumn = tableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == "name" })

@@ -165,12 +165,17 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
 
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // The physical Forward-Delete key reports the .function flag (it's a nav/
+        // function key); ignore that and numeric-pad when checking Delete's mods,
+        // otherwise bare Forward-Delete (mods == [.function]) falls through and
+        // does nothing.
+        let editModifiers = modifiers.subtracting([.function, .numericPad])
         if event.keyCode == 48, let onTab {          // Tab / Shift-Tab → next pane
             onTab(modifiers.contains(.shift))
         } else if (event.keyCode == 36 || event.keyCode == 76), modifiers.isEmpty {
             fileActions?.renameSelectedItem()        // Return / keypad Enter
         } else if (event.keyCode == 51 || event.keyCode == 117),
-                  modifiers.isEmpty || modifiers == .command {
+                  editModifiers.isEmpty || editModifiers == .command {
             // Delete (⌫) / Forward-Delete, with or without ⌘ → Trash the
             // selection (Explorer-style, plus the Mac ⌘⌫ convention).
             fileActions?.trashSelectedItems()
