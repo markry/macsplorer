@@ -90,10 +90,23 @@ extension FolderContents {
     /// run **only in the default run-loop mode** so a still-tracking context menu
     /// can't start the edit mid-teardown, and re-find the row by name in case a
     /// reload reordered things. The active presenter performs the actual edit.
-    func beginRenameDeferred(named name: String) {
+    func beginRenameDeferred(named name: String, attempt: Int = 0) {
         RunLoop.main.perform(inModes: [.default]) { [weak self] in
-            guard let self,
-                  let row = self.items.firstIndex(where: { $0.name == name }) else { return }
+            guard let self else { return }
+            // A "New…" chosen from a right-click while another app was frontmost
+            // brings our window forward but NOT key — so the inline field editor
+            // can't take keyboard focus and the "untitled" name isn't editable.
+            // Make the app active + window key first, then retry on later runloop
+            // ticks (activation is async) until key status settles, capped so a
+            // window that never becomes key can't loop forever.
+            if let window = self.presenter?.presentingWindow,
+               !window.isKeyWindow, attempt < 5 {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                self.beginRenameDeferred(named: name, attempt: attempt + 1)
+                return
+            }
+            guard let row = self.items.firstIndex(where: { $0.name == name }) else { return }
             self.presenter?.beginRename(at: row)
         }
     }

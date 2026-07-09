@@ -17,6 +17,10 @@ protocol FolderContentsPresenter: AnyObject {
     func scrollToTop()
     /// Begin an inline rename of the item at `index`.
     func beginRename(at index: Int)
+    /// The window hosting this view — used to make the app active + window key
+    /// before starting an inline edit (a right-click "New…" from another app
+    /// leaves the window un-key, so the field editor can't take focus).
+    var presentingWindow: NSWindow? { get }
 }
 
 /// The folder being browsed in one tab's right pane: its items, sort order, live

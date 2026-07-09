@@ -123,6 +123,8 @@ final class IconViewController: NSObject, FolderContentsPresenter {
         collectionView.enclosingScrollView?.contentView.scroll(to: .zero)
     }
 
+    var presentingWindow: NSWindow? { collectionView.window }
+
     func beginRename(at index: Int) {
         let path = IndexPath(item: index, section: 0)
         collectionView.scrollToItems(at: [path], scrollPosition: .nearestVerticalEdge)
@@ -290,13 +292,16 @@ final class IconCollectionView: NSCollectionView {
 
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // Forward-Delete reports .function (a nav/function key); ignore it and
+        // numeric-pad so bare Forward-Delete trashes like ⌫ (see HoverTableView).
+        let editModifiers = modifiers.subtracting([.function, .numericPad])
         if event.keyCode == 48, let onTab {          // Tab / Shift-Tab → next pane
             onTab(modifiers.contains(.shift))
         } else if (event.keyCode == 36 || event.keyCode == 76), modifiers.isEmpty {
             // Return / keypad Enter → rename (matches the list view).
             onRename?()
         } else if (event.keyCode == 51 || event.keyCode == 117),
-                  modifiers.isEmpty || modifiers == .command {
+                  editModifiers.isEmpty || editModifiers == .command {
             onTrash?()                                  // Delete / ⌘Delete → Trash
         } else if event.keyCode == 49, modifiers.isEmpty {
             toggleQuickLook()                           // Space
