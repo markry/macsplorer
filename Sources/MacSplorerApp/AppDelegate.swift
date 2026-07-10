@@ -342,11 +342,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         fileMenu.addItem(terminal)
 
         fileMenu.addItem(.separator())
+        // Order matches the context menus: Calculate Folder Sizes… then Get Info.
         let calcSizes = NSMenuItem(title: "Calculate Folder Sizes…",
                                    action: #selector(calculateFolderSizes(_:)),
                                    keyEquivalent: "")
         calcSizes.target = self
         fileMenu.addItem(calcSizes)
+        let getInfo = NSMenuItem(title: "Get Info",
+                                 action: #selector(getInfoForSelection(_:)),
+                                 keyEquivalent: "i")
+        getInfo.target = self
+        fileMenu.addItem(getInfo)
 
         // Edit menu. Cut/Copy/Paste use the standard selectors with no target, so
         // they route through the responder chain — acting on the address-bar text
@@ -547,8 +553,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         keyController?.openInTerminal()
     }
 
+    @objc private func getInfoForSelection(_ sender: Any?) {
+        keyController?.getInfoForSelection()
+    }
+
     @objc private func calculateFolderSizes(_ sender: Any?) {
         keyController?.calculateFolderSizes()
+    }
+
+    /// Show a Get Info panel for `url` (retained until the user closes it). A
+    /// second request for the same item just refocuses the open panel.
+    private var infoWindows: [GetInfoWindowController] = []
+    func presentGetInfo(for url: URL) {
+        if let existing = infoWindows.first(where: { $0.window?.title == "\(url.lastPathComponent) Info" }) {
+            existing.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let controller = GetInfoWindowController(url: url)
+        controller.onClose = { [weak self, weak controller] in
+            self?.infoWindows.removeAll { $0 === controller }
+        }
+        infoWindows.append(controller)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Start a folder-size scan on a specific folder (a context-menu "Calculate
+    /// Folder Sizes…" on the clicked folder, vs. the File-menu entry's current one),
+    /// running in and reported by the front window.
+    func calculateFolderSizes(for url: URL) {
+        keyController?.calculateFolderSizes(root: url)
     }
 
     /// Show a scan's results in a new window (retained until the user closes it).

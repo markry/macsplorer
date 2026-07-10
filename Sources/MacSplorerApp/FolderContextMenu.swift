@@ -8,7 +8,7 @@ final class FolderMenuAction: NSObject {
         case open, openInNewWindow, openInTerminal
         case cut, copy, duplicate, rename, trash
         case reveal, copyPath, addFavorite, removeFavorite
-        case eject
+        case eject, getInfo, calculateSizes
     }
     let kind: Kind
     let url: URL
@@ -56,6 +56,9 @@ enum FolderContextMenu {
             menu.addItem(.separator())
             add("Eject", .eject)
         }
+        menu.addItem(.separator())
+        add("Calculate Folder Sizes…", .calculateSizes)
+        add("Get Info", .getInfo)
         return menu
     }
 
@@ -103,6 +106,8 @@ enum FolderContextMenu {
         case .addFavorite: Favorites.shared.add(url)
         case .removeFavorite: Favorites.shared.remove(url)
         case .eject: eject(url)
+        case .getInfo: (NSApp.delegate as? AppDelegate)?.presentGetInfo(for: url)
+        case .calculateSizes: (NSApp.delegate as? AppDelegate)?.calculateFolderSizes(for: url)
         }
     }
 

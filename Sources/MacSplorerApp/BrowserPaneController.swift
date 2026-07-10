@@ -699,10 +699,11 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
     // MARK: - Folder-size scan
 
-    /// Kick off a background size scan rooted at this window's current folder.
-    func startSizeScan() {
+    /// Kick off a background size scan rooted at `root` (or this window's current
+    /// folder when nil — the File-menu / status-bar entry point).
+    func startSizeScan(root: URL? = nil) {
         guard activeScan == nil else { NSSound.beep(); return }   // one at a time
-        guard let folder = contents.folder else { NSSound.beep(); return }
+        guard let folder = root ?? contents.folder else { NSSound.beep(); return }
         let scanner = FolderSizeScanner()
         activeScan = scanner
         scanStartDate = Date()
@@ -721,6 +722,15 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
     @objc private func cancelSizeScan() {
         activeScan?.cancel()   // completion fires with nil → finishScan tears down
+    }
+
+    /// Get Info on the right pane's selection — or, if nothing is selected, the
+    /// current folder itself (so ⌘I always shows *something* useful).
+    func getInfoForSelection() {
+        let urls = contents.selectedURLs()
+        let targets = urls.isEmpty ? [contents.folder].compactMap { $0 } : urls
+        guard !targets.isEmpty else { NSSound.beep(); return }
+        for url in targets { (NSApp.delegate as? AppDelegate)?.presentGetInfo(for: url) }
     }
 
     private func updateScanStatus() {

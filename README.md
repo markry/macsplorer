@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.7.9.
+> **Status:** v0.8.0.
 
 ## Download
 
@@ -76,13 +76,20 @@ expect:
   opposite of the left-drag default (copy within a volume, move across volumes).
 - **Quick Look** — press the spacebar to preview the selection, just like
   Finder.
-- **Folder sizes** — **File ▸ Calculate Folder Sizes…** runs a parallel, low-
-  priority background walk of the current folder, totalling **size-on-disk**, and
-  opens a results window: an indented outline of folders, biggest first, with
-  size and % of total. Double-click a row to jump there. Live progress (with a
-  Stop button) shows in the status bar. Cloud (File Provider) mounts are skipped
-  by default (**View ▸ Skip Cloud Storage When Scanning**), and because it counts
-  on-disk bytes, online-only cloud files register as ~0.
+- **Get Info** — **⌘I** or right-click ▸ **Get Info** opens a panel for the
+  selected item: name, kind, location, and dates. For a **volume** it shows
+  capacity / used / available with a bar; for a **folder**, the immediate item
+  count plus a **Calculate** button for the full recursive total size; for a
+  **file**, its size.
+- **Folder sizes** — **Calculate Folder Sizes…** (in the **File** menu and the
+  folder right-click menu) runs a parallel, low-priority background walk,
+  totalling **size-on-disk**, and opens a results window: an indented outline of
+  folders, biggest first, with size and % of total. Double-click a row to jump
+  there. From a context menu it scans the folder you clicked; from the File menu,
+  the current folder. Live progress (with a Stop button) shows in the status bar.
+  Cloud (File Provider) mounts are skipped by default (**View ▸ Skip Cloud
+  Storage When Scanning**), and because it counts on-disk bytes, online-only
+  cloud files register as ~0.
 - **Familiar shortcuts** — `⌘N` new window, `⌘⇧N` new folder, `⌘O` open,
   `⌘X/⌘C/⌘V` cut/copy/paste, `⌘D` duplicate, `⌘⌫` move to Trash, `⌘⇧.` show
   hidden files, `⌥⌘T` open the current folder in Terminal.

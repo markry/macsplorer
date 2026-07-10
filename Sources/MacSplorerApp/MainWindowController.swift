@@ -68,8 +68,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         activePane.map { ($0.currentViewMode, $0.currentIconSize) }
     }
 
-    /// Start a folder-size scan rooted at the active tab's current folder.
-    func calculateFolderSizes() { activePane?.startSizeScan() }
+    /// Start a folder-size scan rooted at `root` (or the active tab's current
+    /// folder when nil).
+    func calculateFolderSizes(root: URL? = nil) { activePane?.startSizeScan(root: root) }
+
+    /// Get Info on the active tab's selection (or its current folder if nothing
+    /// is selected).
+    func getInfoForSelection() { activePane?.getInfoForSelection() }
 
     // MARK: - Tabs
 
