@@ -440,6 +440,9 @@ extension FolderContents {
             add(menu, "Open in Terminal", #selector(ctxTerminal(_:)), target)
             add(menu, "Reveal in Finder", #selector(ctxReveal(_:)), target)
             add(menu, "Copy Path", #selector(ctxCopyPath(_:)), target)
+            menu.addItem(.separator())
+            add(menu, "Calculate Folder Sizes…", #selector(ctxCalculateFolderSizesFolder(_:)), target)
+            add(menu, "Get Info", #selector(ctxGetInfoFolder(_:)), target)
             return menu
         }
         let item = items[index]
@@ -479,6 +482,11 @@ extension FolderContents {
                 add(menu, "Eject", #selector(ctxEject(_:)), target)
             }
         }
+        menu.addItem(.separator())
+        if isFolder {
+            add(menu, "Calculate Folder Sizes…", #selector(ctxCalculateFolderSizes(_:)), target)
+        }
+        add(menu, "Get Info", #selector(ctxGetInfo(_:)), target)
         return menu
     }
 
@@ -507,6 +515,20 @@ extension FolderContents {
     @objc func ctxRename(_ sender: Any?) { renameSelectedItem() }
     @objc func ctxTrash(_ sender: Any?) { trashSelectedItems() }
     @objc func ctxReveal(_ sender: Any?) { revealSelection() }
+    @objc func ctxGetInfo(_ sender: Any?) {
+        for url in selectedURLs() { (NSApp.delegate as? AppDelegate)?.presentGetInfo(for: url) }
+    }
+    @objc func ctxGetInfoFolder(_ sender: Any?) {
+        if let folder { (NSApp.delegate as? AppDelegate)?.presentGetInfo(for: folder) }
+    }
+    @objc func ctxCalculateFolderSizes(_ sender: Any?) {
+        if let url = selectedFolderForFavorite() {
+            (NSApp.delegate as? AppDelegate)?.calculateFolderSizes(for: url)
+        }
+    }
+    @objc func ctxCalculateFolderSizesFolder(_ sender: Any?) {
+        if let folder { (NSApp.delegate as? AppDelegate)?.calculateFolderSizes(for: folder) }
+    }
     @objc func ctxCopyPath(_ sender: Any?) { copySelectionPaths() }
     @objc func ctxTerminal(_ sender: Any?) { openSelectionInTerminal() }
 
