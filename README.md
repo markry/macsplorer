@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.8.0.
+> **Status:** v0.8.1.
 
 ## Download
 
@@ -65,8 +65,8 @@ expect:
   Rich Text, CSV, Word, PowerPoint) ready to name, or an **Internet Shortcut**
   (`.url`) from the URL on your clipboard — written in the cross-platform format
   so it opens on macOS and in a Windows VM alike. The same set is available from
-  **File ▸ New ▸**, and the Internet Shortcut also has a keyboard shortcut
-  (**Fn+Shift+S** / **Fn+Shift+U** while MacSplorer is focused).
+  **File ▸ New ▸**, and two have keyboard shortcuts (while MacSplorer is focused):
+  **⌃⇧S** for an Internet Shortcut from the clipboard, **⌃⇧W** for a Word document.
 - **File operations** — copy / cut / paste (with name-collision prompts),
   rename in place, duplicate, move to Trash (`⌫` or `⌘⌫`), new folder. Live
   folder watching keeps every window current. A failed transfer (out of space,
@@ -92,7 +92,8 @@ expect:
   cloud files register as ~0.
 - **Familiar shortcuts** — `⌘N` new window, `⌘⇧N` new folder, `⌘O` open,
   `⌘X/⌘C/⌘V` cut/copy/paste, `⌘D` duplicate, `⌘⌫` move to Trash, `⌘⇧.` show
-  hidden files, `⌥⌘T` open the current folder in Terminal.
+  hidden files, `⌥⌘T` open the current folder in Terminal, `⌃⇧S` new Internet
+  Shortcut from the clipboard, `⌃⇧W` new Word document.
 - **Finder interop** — drag and drop to/from Finder, Reveal in Finder, Copy
   Path. Files dragged in from apps that hand off **promised files** (Outlook,
   Mail, Photos, Messages, …) are written into the target folder, just like Finder.
