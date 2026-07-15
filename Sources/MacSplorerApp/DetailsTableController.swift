@@ -6,6 +6,9 @@ import MacSplorerCore
 /// rename. The model + all file-operation logic lives in `FolderContents`; this
 /// class is the table-specific view layer.
 final class DetailsTableController: NSObject, FolderContentsPresenter {
+    /// Identifier locating the per-row download spinner within a name cell.
+    static let spinnerID = NSUserInterfaceItemIdentifier("downloadSpinner")
+
     private let tableView: HoverTableView
     private let contents: FolderContents
 
@@ -193,11 +196,24 @@ final class DetailsTableController: NSObject, FolderContentsPresenter {
             icon.translatesAutoresizingMaskIntoConstraints = false
             cell.imageView = icon
             cell.addSubview(icon)
+            // Download spinner, sharing the icon's slot — shown (and the icon
+            // hidden) while an online-only file is being materialized.
+            let spinner = NSProgressIndicator()
+            spinner.style = .spinning
+            spinner.controlSize = .small
+            spinner.isDisplayedWhenStopped = false
+            spinner.identifier = DetailsTableController.spinnerID
+            spinner.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(spinner)
             NSLayoutConstraint.activate([
                 icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
                 icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
                 icon.widthAnchor.constraint(equalToConstant: 16),
                 icon.heightAnchor.constraint(equalToConstant: 16),
+                spinner.centerXAnchor.constraint(equalTo: icon.centerXAnchor),
+                spinner.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
+                spinner.widthAnchor.constraint(equalToConstant: 16),
+                spinner.heightAnchor.constraint(equalToConstant: 16),
                 text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 4),
                 text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
                 text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
@@ -253,7 +269,19 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
         }
         switch column.identifier.rawValue {
         case "name":
-            cell.imageView?.image = NSWorkspace.shared.icon(forFile: item.url.path)
+            let spinner = cell.subviews.first {
+                $0.identifier == DetailsTableController.spinnerID
+            } as? NSProgressIndicator
+            if contents.isDownloading(item) {
+                // Materializing: spinner replaces the (hidden) file icon.
+                cell.imageView?.isHidden = true
+                spinner?.startAnimation(nil)
+            } else {
+                spinner?.stopAnimation(nil)
+                cell.imageView?.isHidden = false
+                let icon = NSWorkspace.shared.icon(forFile: item.url.path)
+                cell.imageView?.image = item.isCloudPlaceholder ? CloudBadge.badged(icon) : icon
+            }
             cell.textField?.isEditable = false
             cell.textField?.isBordered = false
             cell.textField?.drawsBackground = false

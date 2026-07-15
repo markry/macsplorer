@@ -56,6 +56,10 @@ final class FolderContents: NSObject {
     /// scheduling the same walk twice.
     private var pendingSizeChecks = Set<ObjectIdentifier>()
 
+    /// Standardized paths of online-only files whose contents we're currently
+    /// materializing (download-on-open), for the spinner + click-guard.
+    private var downloadingPaths = Set<String>()
+
     /// Whether hidden (dot) files are shown. Set, then call `reload`.
     var showHiddenFiles = false
 
@@ -260,8 +264,68 @@ final class FolderContents: NSObject {
     func openItem(_ item: FSItem) {
         if item.isDirectory && !item.isPackage {
             onOpenFolder?(item.url)
+        } else if item.isCloudPlaceholder {
+            downloadThenOpen(item)
         } else {
             NSWorkspace.shared.open(item.url)
+        }
+    }
+
+    /// Whether `item`'s online-only contents are currently being fetched, so the
+    /// active presenter can show a spinner in place of the cloud badge. Keyed by
+    /// path (not object identity) so it survives the item being rebuilt by a
+    /// directory-watcher reload mid-download.
+    func isDownloading(_ item: FSItem) -> Bool {
+        downloadingPaths.contains(item.url.standardizedFileURL.path)
+    }
+
+    /// Open an "online only" cloud file (OneDrive/iCloud File Provider placeholder).
+    /// `NSWorkspace.open` alone hands the launched app a dataless placeholder, so
+    /// nothing opens. Finder first materializes the file; we do the same by taking
+    /// a coordinated read, which makes the File Provider fetch the real bytes to
+    /// disk. That download can block, so we run it off the main thread, showing a
+    /// spinner meanwhile, and open once the file is present.
+    private func downloadThenOpen(_ item: FSItem) {
+        let url = item.url
+        let key = url.standardizedFileURL.path
+        // Click-guard: ignore repeat opens while the same file is still downloading.
+        guard downloadingPaths.insert(key).inserted else { return }
+        refreshRow(for: item)   // swap the badge for a spinner
+
+        // Materialize through the *resolved* path. Our item URLs are re-based onto
+        // the friendly ~/OneDrive symlink; coordinating a read on that symlink path
+        // returns success but never reaches the File Provider, so the file stays
+        // dataless and the subsequent open fails. The real CloudStorage path does
+        // trigger the fetch.
+        let materializeURL = url.resolvingSymlinksInPath()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let coordinator = NSFileCoordinator()
+            var coordinationError: NSError?
+            coordinator.coordinate(readingItemAt: materializeURL, options: [], error: &coordinationError) { readURL in
+                // Actually read the bytes: this forces the File Provider to fetch
+                // the whole file and blocks until it's on disk, so the file is
+                // guaranteed present before we open it. Chunked to bound memory on
+                // large files.
+                if let handle = try? FileHandle(forReadingFrom: readURL) {
+                    while let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty {}
+                    try? handle.close()
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.downloadingPaths.remove(key)
+                // Re-list so the now-materialized file drops its placeholder badge
+                // (and the spinner), then launch it.
+                self.reload()
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
+    /// Reload just the row currently backing `item`, if it's still on screen.
+    private func refreshRow(for item: FSItem) {
+        if let index = items.firstIndex(where: { $0 === item }) {
+            presenter?.reloadItem(at: index)
         }
     }
 }

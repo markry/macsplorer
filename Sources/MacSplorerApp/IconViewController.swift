@@ -146,7 +146,7 @@ extension IconViewController: NSCollectionViewDataSource, NSCollectionViewDelega
                         itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
         let item = collectionView.makeItem(withIdentifier: IconItem.identifier, for: indexPath) as! IconItem
         if let fsItem = contents.item(at: indexPath.item) {
-            item.configure(with: fsItem, edge: edge)
+            item.configure(with: fsItem, edge: edge, downloading: contents.isDownloading(fsItem))
         }
         return item
     }
@@ -260,6 +260,47 @@ final class IconCollectionView: NSCollectionView {
         }
     }
 
+    // MARK: Hover (single-click-to-open feedback — parallels HoverTableView)
+
+    private var hoveredIndex = -1
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = hoverTrackingArea { removeTrackingArea(existing) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self)
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        // Only in single-click mode, and never while an inline rename is active
+        // (its field editor is an NSText) — matches the list view.
+        guard singleClickOpens?() == true, !(window?.firstResponder is NSText) else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        setHovered(index: indexPathForItem(at: point)?.item ?? -1)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        setHovered(index: -1)
+    }
+
+    /// Move the hover highlight from the old tile to the new one (either may be
+    /// absent). Only realized (visible) items need updating.
+    private func setHovered(index: Int) {
+        guard index != hoveredIndex else { return }
+        let previous = hoveredIndex
+        hoveredIndex = index
+        for i in [previous, index] where i >= 0 {
+            (item(at: IndexPath(item: i, section: 0)) as? IconItem)?.setHovered(i == index)
+        }
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         let index = indexPathForItem(at: point)?.item ?? -1
@@ -358,8 +399,12 @@ final class IconItem: NSCollectionViewItem {
     private let thumb = NSImageView()
     private let name = NSTextField(labelWithString: "")
     private let selectionBackground = NSView()
+    private let hoverBackground = NSView()
+    private let spinner = NSProgressIndicator()
     private var url: URL?
     private var requestedEdge: CGFloat = 0
+    private var itemName = ""
+    private var hovered = false
 
     override func loadView() {
         view = NSView()
@@ -371,6 +416,14 @@ final class IconItem: NSCollectionViewItem {
         selectionBackground.isHidden = true
         selectionBackground.translatesAutoresizingMaskIntoConstraints = false
 
+        // Subtle hover highlight for single-click mode (parallels the list view's
+        // hover underline), sitting under the selection tint.
+        hoverBackground.wantsLayer = true
+        hoverBackground.layer?.cornerRadius = 6
+        hoverBackground.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.1).cgColor
+        hoverBackground.isHidden = true
+        hoverBackground.translatesAutoresizingMaskIntoConstraints = false
+
         thumb.imageScaling = .scaleProportionallyUpOrDown
         thumb.translatesAutoresizingMaskIntoConstraints = false
 
@@ -381,17 +434,31 @@ final class IconItem: NSCollectionViewItem {
         name.font = .systemFont(ofSize: 11)
         name.translatesAutoresizingMaskIntoConstraints = false
 
+        spinner.style = .spinning
+        spinner.isDisplayedWhenStopped = false
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(hoverBackground)
         view.addSubview(selectionBackground)
         view.addSubview(thumb)
+        view.addSubview(spinner)
         view.addSubview(name)
         self.imageView = thumb
         self.textField = name
 
         NSLayoutConstraint.activate([
+            hoverBackground.topAnchor.constraint(equalTo: selectionBackground.topAnchor),
+            hoverBackground.bottomAnchor.constraint(equalTo: selectionBackground.bottomAnchor),
+            hoverBackground.leadingAnchor.constraint(equalTo: selectionBackground.leadingAnchor),
+            hoverBackground.trailingAnchor.constraint(equalTo: selectionBackground.trailingAnchor),
+
             thumb.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
             thumb.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             thumb.widthAnchor.constraint(equalTo: view.widthAnchor, constant: -8),
             thumb.heightAnchor.constraint(equalTo: view.widthAnchor, constant: -8),
+
+            spinner.centerXAnchor.constraint(equalTo: thumb.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: thumb.centerYAnchor),
 
             name.topAnchor.constraint(equalTo: thumb.bottomAnchor, constant: 2),
             name.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
@@ -404,14 +471,18 @@ final class IconItem: NSCollectionViewItem {
         ])
     }
 
-    func configure(with item: FSItem, edge: CGFloat) {
+    func configure(with item: FSItem, edge: CGFloat, downloading: Bool = false) {
         url = item.url
         requestedEdge = edge
-        name.stringValue = item.name
+        itemName = item.name
         name.maximumNumberOfLines = 2
         name.isEditable = false
         name.isBordered = false
         name.drawsBackground = false
+        applyNameStyling()   // plain, or underlined if this tile is still hovered
+
+        // Spin over the icon while an online-only file is being materialized.
+        if downloading { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
 
         if item.isParentLink {
             thumb.image = NSImage(systemSymbolName: "arrow.turn.up.left", accessibilityDescription: "Parent folder")?
@@ -420,19 +491,63 @@ final class IconItem: NSCollectionViewItem {
         }
 
         // Show the regular file-type icon immediately; swap in a real content
-        // thumbnail only if QuickLook produces one.
+        // thumbnail only if QuickLook produces one. Online-only cloud files get a
+        // download badge so it's clear they aren't on disk yet — but not while the
+        // spinner is up (it already conveys "downloading").
+        let placeholder = item.isCloudPlaceholder && !downloading
         let icon = NSWorkspace.shared.icon(forFile: item.url.path)
-        thumb.image = Thumbnailer.shared.cached(for: item.url, edge: edge) ?? icon
+        let initial = Thumbnailer.shared.cached(for: item.url, edge: edge) ?? icon
+        thumb.image = placeholder ? CloudBadge.badged(initial) : initial
         let scale = view.window?.backingScaleFactor ?? 2
         Thumbnailer.shared.thumbnail(for: item.url, edge: edge, scale: scale) { [weak self] image in
             // Guard against cell reuse: only apply if still showing the same file.
             guard let self, self.url == item.url, self.requestedEdge == edge else { return }
-            self.thumb.image = image
+            self.thumb.image = placeholder ? CloudBadge.badged(image) : image
         }
     }
 
     override var isSelected: Bool {
-        didSet { selectionBackground.isHidden = !isSelected }
+        didSet {
+            selectionBackground.isHidden = !isSelected
+            updateHoverBackground()   // selection tint supersedes the hover tint
+        }
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        hovered = false
+        updateHoverBackground()
+    }
+
+    /// Hover feedback for single-click-to-open mode, mirroring the list view: a
+    /// subtle background tint plus an underlined name. Driven by the collection
+    /// view's mouse tracking.
+    func setHovered(_ value: Bool) {
+        guard hovered != value else { return }
+        hovered = value
+        updateHoverBackground()
+        applyNameStyling()
+    }
+
+    private func updateHoverBackground() {
+        hoverBackground.isHidden = !hovered || isSelected
+    }
+
+    /// Draw the name plain, or underlined while hovered — keeping the centered,
+    /// two-line, middle-truncated layout the tile uses.
+    private func applyNameStyling() {
+        guard !hovered else {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            paragraph.lineBreakMode = .byTruncatingMiddle
+            name.attributedStringValue = NSAttributedString(
+                string: itemName,
+                attributes: [.underlineStyle: NSUnderlineStyle.single.rawValue,
+                             .paragraphStyle: paragraph,
+                             .font: name.font as Any])
+            return
+        }
+        name.stringValue = itemName
     }
 
     func beginEditing(delegate: NSTextFieldDelegate) {

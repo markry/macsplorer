@@ -33,12 +33,19 @@ public final class FSItem {
     /// navigates up.
     public let isParentLink: Bool
 
+    /// True for a cloud file (OneDrive/iCloud File Provider placeholder) whose
+    /// contents aren't on disk yet — "online only". Such a file must be
+    /// materialized before it can be opened; we badge it and download-on-open.
+    /// See `.ubiquitousItemDownloadingStatusKey`; `.notDownloaded` == placeholder.
+    public let isCloudPlaceholder: Bool
+
     private static let resourceKeys: [URLResourceKey] = [
         .isDirectoryKey, .isPackageKey, .isSymbolicLinkKey,
         .contentModificationDateKey, .creationDateKey,
         .addedToDirectoryDateKey, .contentAccessDateKey,
         .fileSizeKey, .totalFileAllocatedSizeKey,
         .localizedTypeDescriptionKey, .localizedNameKey,
+        .ubiquitousItemDownloadingStatusKey,
     ]
 
     private var cachedFolderChildren: [FSItem]?
@@ -95,6 +102,10 @@ public final class FSItem {
         self.byteSize = directory ? nil : (values?.fileSize ?? values?.totalFileAllocatedSize)
         self.typeDescription = values?.localizedTypeDescription
         self.isParentLink = false
+        // A File Provider item whose contents haven't been downloaded yet reports
+        // `.notDownloaded`; local files (and non-cloud files, where the key is nil)
+        // are treated as materialized.
+        self.isCloudPlaceholder = values?.ubiquitousItemDownloadingStatus == .notDownloaded
     }
 
     /// A synthetic ".." entry that navigates to `parent`. Carries no metadata and
@@ -112,6 +123,7 @@ public final class FSItem {
         self.byteSize = nil
         self.typeDescription = nil
         self.isParentLink = true
+        self.isCloudPlaceholder = false
     }
 
     /// All entries in a directory (files + folders), unsorted. Returns [] on
