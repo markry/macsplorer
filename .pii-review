@@ -1,0 +1,23 @@
+Project: MacSplorer — a public, MIT-licensed open-source macOS file manager
+(github.com/markry/macsplorer). It stores NO user data; it operates on files but
+records none in the repo.
+
+ALLOWED (not PII in this repo):
+- The project's own author & contact email: mark@ryland.net (appears in LICENSE,
+  README, Info.plist, and git authorship). ALLOW it everywhere.
+- "Mark Ryland" as the copyright holder / author name — he is the public author
+  of this OSS project. ALLOW.
+- The Apple Developer ID Team ID Q5A8FF5XXR — public by design (embedded in every
+  notarized release binary and its Gatekeeper check). ALLOW.
+- Generic macOS path examples in comments (~/OneDrive, ~/Library/CloudStorage/
+  OneDrive-Personal, /Volumes/Foo, /Volumes/Macintosh HD). ALLOW.
+- Placeholder AWS resources: my-bucket-one / my-bucket-two, arn:aws:s3:::my-bucket-*,
+  all-zero account ids (000000000000), example.com / example.org. ALLOW.
+
+WATCH ESPECIALLY (this repo is gaining an Amazon S3 provider):
+- a REAL AWS account id (12 digits) or an ARN containing one
+- a REAL S3 bucket name (looks like an actual private bucket, not a placeholder)
+- a REAL AWS / SSO named profile that identifies a real org or person
+- any real person's name other than Mark-as-author, or any third-party email
+- a real personal file path or username (e.g. /Users/<a real name>/...)
+- any access key, secret, token, or presigned URL
