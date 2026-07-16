@@ -1,0 +1,30 @@
+name: CI
+
+# Build and run the MacSplorerCore test suite on every push and PR. The app is
+# CLT-buildable, but XCTest only ships with Xcode — GitHub's macOS runners have
+# it, so this is where the "guarded by tests" safety net actually runs. Free for
+# this public repo.
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build & test (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
