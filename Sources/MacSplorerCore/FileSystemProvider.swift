@@ -103,9 +103,26 @@ public struct ProviderCapabilities {
 /// disk; the `s3://` case joins here on the `s3-provider` branch.
 public enum Providers {
     private static let local = LocalProvider()
+    private static let lock = NSLock()
+    private static var factories: [String: (URL) -> FileSystemProvider] = [:]
 
+    /// Register a provider factory for a URL scheme. The S3 module calls this at
+    /// app startup (`register(scheme: "s3") { S3Provider(url: $0) }`), so the
+    /// resolver can route `s3://` without MacSplorerCore importing S3 or the AWS
+    /// SDK — keeping the core model dependency-free (and the open-core seam clean).
+    public static func register(scheme: String, factory: @escaping (URL) -> FileSystemProvider) {
+        lock.lock(); defer { lock.unlock() }
+        factories[scheme] = factory
+    }
+
+    /// The provider responsible for `url`: a registered factory for its scheme
+    /// (e.g. `s3`), else the local disk. Local file URLs have scheme `file` (or
+    /// none) and fall through here.
     public static func provider(for url: URL) -> FileSystemProvider {
-        // Everything is local for now. `s3://` routing arrives with S3Provider.
+        if let scheme = url.scheme {
+            lock.lock(); let factory = factories[scheme]; lock.unlock()
+            if let factory { return factory(url) }
+        }
         return local
     }
 }
