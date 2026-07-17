@@ -29,7 +29,7 @@ extension FolderContents {
         let urls = selectedURLs()
         guard !urls.isEmpty, let folder else { return }
         for url in urls {
-            do { _ = try FileOperations.moveToTrash(url) } catch { NSSound.beep() }
+            do { _ = try Providers.provider(for: url).moveToTrash(url) } catch { NSSound.beep() }
         }
         finishMutation(affected: [folder])
     }
@@ -39,7 +39,7 @@ extension FolderContents {
         guard !urls.isEmpty, let folder else { return }
         var names: [String] = []
         for url in urls {
-            do { names.append(try FileOperations.copy(url, into: folder).lastPathComponent) }
+            do { names.append(try Providers.provider(for: folder).copy(url, into: folder).lastPathComponent) }
             catch { NSSound.beep() }
         }
         finishMutation(affected: [folder], selecting: names)
@@ -119,7 +119,7 @@ extension FolderContents {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != item.name else { return false }
         do {
-            let dest = try FileOperations.rename(item.url, to: newName)
+            let dest = try Providers.provider(for: item.url).rename(item.url, to: newName)
             finishMutation(affected: [item.url.deletingLastPathComponent()],
                            selecting: [dest.lastPathComponent])
             return true
@@ -134,7 +134,7 @@ extension FolderContents {
     func makeNewFolder(in directory: URL? = nil) {
         guard let target = directory ?? folder else { return }
         showTargetThenCreate(in: target) {
-            try FileOperations.newFolder(in: target).lastPathComponent
+            try Providers.provider(for: target).newFolder(in: target).lastPathComponent
         }
     }
 
@@ -142,7 +142,7 @@ extension FolderContents {
     func makeNewDocument(_ type: NewDocumentType, in directory: URL? = nil) {
         guard let target = directory ?? folder else { return }
         showTargetThenCreate(in: target) {
-            try FileOperations.newFile(
+            try Providers.provider(for: target).newFile(
                 in: target, named: "\(NewDocument.defaultBaseName).\(type.ext)").lastPathComponent
         }
     }
@@ -153,7 +153,7 @@ extension FolderContents {
               let urlString = NewDocument.clipboardURL() else { NSSound.beep(); return }
         showTargetThenCreate(in: target) {
             let data = NewDocument.internetShortcutData(for: urlString)
-            return try FileOperations.newFile(
+            return try Providers.provider(for: target).newFile(
                 in: target, named: "\(NewDocument.defaultBaseName).url", contents: data).lastPathComponent
         }
     }
@@ -190,7 +190,7 @@ extension FolderContents {
     func duplicateFolder(_ url: URL) {
         let parent = url.deletingLastPathComponent()
         do {
-            let name = try FileOperations.copy(url, into: parent).lastPathComponent
+            let name = try Providers.provider(for: parent).copy(url, into: parent).lastPathComponent
             finishMutation(affected: [parent], selecting: samePath(parent, folder) ? [name] : [])
         } catch { NSSound.beep() }
     }
@@ -198,7 +198,7 @@ extension FolderContents {
     func trashFolder(_ url: URL) {
         let parent = url.deletingLastPathComponent()
         do {
-            _ = try FileOperations.moveToTrash(url)
+            _ = try Providers.provider(for: url).moveToTrash(url)
             finishMutation(affected: [parent])
         } catch { NSSound.beep() }
     }
@@ -241,6 +241,9 @@ extension FolderContents {
         var applyToAll: CollisionChoice?
         var failure: (name: String, error: Error)?
         let ask = Preferences.shared.promptOnCollision
+        // Phase 0: the destination's provider performs the writes. A cross-provider
+        // transfer (local <-> S3) becomes a download/upload bridge in a later phase.
+        let provider = Providers.provider(for: destination)
 
         for url in urls {
             if isSelfOrDescendant(url, of: destination) { continue }
@@ -266,13 +269,13 @@ extension FolderContents {
             do {
                 switch choice {
                 case .keepBoth:
-                    let dest = move ? try FileOperations.move(url, into: destination)
-                                    : try FileOperations.copy(url, into: destination)
+                    let dest = move ? try provider.move(url, into: destination)
+                                    : try provider.copy(url, into: destination)
                     landed.append(dest.lastPathComponent)
                 case .replace:
-                    _ = try? FileOperations.moveToTrash(target)
-                    let dest = move ? try FileOperations.move(url, to: target)
-                                    : try FileOperations.copy(url, to: target)
+                    _ = try? provider.moveToTrash(target)
+                    let dest = move ? try provider.move(url, to: target)
+                                    : try provider.copy(url, to: target)
                     landed.append(dest.lastPathComponent)
                 case .stop:
                     break

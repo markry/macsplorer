@@ -67,7 +67,7 @@ final class FolderTreeController: NSObject {
         let includeHidden = showHiddenFiles
         let url = item.url
         DispatchQueue.global(qos: .utility).async {
-            let hasSubfolders = FSItem.directoryHasSubfolders(at: url, includeHidden: includeHidden)
+            let hasSubfolders = Providers.provider(for: url).hasChildFolders(at: url, includeHidden: includeHidden)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.pendingSubfolderChecks.remove(key)
