@@ -13,3 +13,6 @@ dist/
 # Editor
 .vscode/
 *.swp
+
+# local symlink to the cloud-synced release/binaries folder (see link-release.sh)
+/release
