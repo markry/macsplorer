@@ -66,9 +66,9 @@ final class FolderTreeController: NSObject {
         pendingSubfolderChecks.insert(key)
         let includeHidden = showHiddenFiles
         let url = item.url
-        DispatchQueue.global(qos: .utility).async {
-            let hasSubfolders = Providers.provider(for: url).hasChildFolders(at: url, includeHidden: includeHidden)
-            DispatchQueue.main.async { [weak self] in
+        Task {
+            let hasSubfolders = await Providers.provider(for: url).hasChildFolders(at: url, includeHidden: includeHidden)
+            await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.pendingSubfolderChecks.remove(key)
                 guard includeHidden == self.showHiddenFiles else { return } // stale toggle
