@@ -152,7 +152,7 @@ public final class FSItem {
         if let cached = cachedFolderChildren, cachedChildrenIncludeHidden == includeHidden {
             return cached
         }
-        let folders = FSItem.contents(of: url, includeHidden: includeHidden)
+        let folders = Providers.provider(for: url).children(of: url, includeHidden: includeHidden)
             .filter { $0.isDirectory && !$0.isPackage }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         cachedFolderChildren = folders
@@ -180,7 +180,7 @@ public final class FSItem {
         let previous = cachedFolderChildren ?? []
         let existingByName = Dictionary(previous.map { ($0.name, $0) },
                                         uniquingKeysWith: { first, _ in first })
-        let merged = FSItem.contents(of: url, includeHidden: includeHidden)
+        let merged = Providers.provider(for: url).children(of: url, includeHidden: includeHidden)
             .filter { $0.isDirectory && !$0.isPackage }
             .map { existingByName[$0.name] ?? $0 }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }

@@ -238,7 +238,7 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func immediateItemCountText() -> String {
-        let n = FSItem.contents(of: url, includeHidden: Preferences.shared.showHiddenFiles).count
+        let n = Providers.provider(for: url).children(of: url, includeHidden: Preferences.shared.showHiddenFiles).count
         return n == 1 ? "1 item" : "\(n) items"
     }
 

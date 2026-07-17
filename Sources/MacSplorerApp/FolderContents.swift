@@ -121,7 +121,7 @@ final class FolderContents: NSObject {
     /// (prepending ".." when enabled and not at a volume root).
     private func loadItems() {
         guard let folder else { realItems = []; items = []; return }
-        realItems = FSItem.contents(of: folder, includeHidden: showHiddenFiles)
+        realItems = Providers.provider(for: folder).children(of: folder, includeHidden: showHiddenFiles)
         sortRealItems()
         composeItems()
     }
