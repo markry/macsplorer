@@ -1,7 +1,9 @@
 # SwiftPM
 .build/
 .swiftpm/
-Package.resolved
+# Package.resolved IS tracked — it pins the AWS SDK (and transitive) versions so
+# the release build Mac / CI / other machines build the exact versions tested,
+# rather than each resolving a drifting `from:` latest.
 
 # Assembled app bundle / release artifacts
 build/
