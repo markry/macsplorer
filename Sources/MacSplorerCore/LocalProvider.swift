@@ -23,15 +23,17 @@ public struct LocalProvider: FileSystemProvider {
 
     // MARK: Enumeration & metadata
 
-    public func children(of directory: URL, includeHidden: Bool) -> [FSItem] {
+    // Local reads are fast and synchronous; these complete without suspending, so
+    // the async signature costs local browsing nothing.
+    public func children(of directory: URL, includeHidden: Bool) async throws -> [FSItem] {
         FSItem.contents(of: directory, includeHidden: includeHidden)
     }
 
-    public func metadata(for url: URL) -> FSItem {
+    public func metadata(for url: URL) async throws -> FSItem {
         FSItem(url: url)
     }
 
-    public func hasChildFolders(at directory: URL, includeHidden: Bool) -> Bool {
+    public func hasChildFolders(at directory: URL, includeHidden: Bool) async -> Bool {
         FSItem.directoryHasSubfolders(at: directory, includeHidden: includeHidden)
     }
 

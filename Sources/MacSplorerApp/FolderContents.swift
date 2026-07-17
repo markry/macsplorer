@@ -60,6 +60,11 @@ final class FolderContents: NSObject {
     /// materializing (download-on-open), for the spinner + click-guard.
     private var downloadingPaths = Set<String>()
 
+    /// Bumped on every (re)load so a slow async load (S3) that resolves after the
+    /// user has already navigated elsewhere can detect it's stale and drop its
+    /// results instead of clobbering the newer folder.
+    private var loadGeneration = 0
+
     /// Whether hidden (dot) files are shown. Set, then call `reload`.
     var showHiddenFiles = false
 
@@ -93,35 +98,52 @@ final class FolderContents: NSObject {
     func show(folder url: URL) {
         folder = url
         watcher.watch(url)
-        loadItems()
-        presenter?.reloadContents()
-        if !items.isEmpty { presenter?.scrollToTop() }
-        emitStatus()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.loadItems()
+            self.presenter?.reloadContents()
+            if !self.items.isEmpty { self.presenter?.scrollToTop() }
+            self.emitStatus()
+        }
     }
 
     /// Re-list the current folder in place, preserving the selection by path.
     func reload() {
         guard !isRenaming else { return }
         guard folder != nil else { return }
+        // Capture the current selection synchronously, before the async reload
+        // replaces `items`.
         let selectedPaths = Set(selectedIndexes()
             .filter { !items[$0].isParentLink }
             .map { items[$0].url.standardizedFileURL.path })
-        loadItems()
-        presenter?.reloadContents()
-        if !selectedPaths.isEmpty {
-            let rows = items.enumerated()
-                .filter { !$0.element.isParentLink && selectedPaths.contains($0.element.url.standardizedFileURL.path) }
-                .map(\.offset)
-            if !rows.isEmpty { presenter?.selectItems(at: IndexSet(rows)) }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.loadItems()
+            self.presenter?.reloadContents()
+            if !selectedPaths.isEmpty {
+                let rows = self.items.enumerated()
+                    .filter { !$0.element.isParentLink && selectedPaths.contains($0.element.url.standardizedFileURL.path) }
+                    .map(\.offset)
+                if !rows.isEmpty { self.presenter?.selectItems(at: IndexSet(rows)) }
+            }
+            self.emitStatus()
         }
-        emitStatus()
     }
 
     /// (Re)read the folder, sort the real entries, and compose the displayed list
-    /// (prepending ".." when enabled and not at a volume root).
-    private func loadItems() {
+    /// (prepending ".." when enabled and not at a volume root). Async: a remote
+    /// provider (S3) suspends here; local completes without suspending.
+    @MainActor
+    private func loadItems() async {
         guard let folder else { realItems = []; items = []; return }
-        realItems = Providers.provider(for: folder).children(of: folder, includeHidden: showHiddenFiles)
+        loadGeneration &+= 1
+        let gen = loadGeneration
+        let target = folder
+        let hidden = showHiddenFiles
+        let loaded = (try? await Providers.provider(for: target).children(of: target, includeHidden: hidden)) ?? []
+        // A newer load started while we awaited — drop these stale results.
+        guard gen == loadGeneration else { return }
+        realItems = loaded
         sortRealItems()
         composeItems()
     }

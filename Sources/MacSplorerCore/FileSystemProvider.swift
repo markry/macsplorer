@@ -19,16 +19,19 @@ public protocol FileSystemProvider {
     var capabilities: ProviderCapabilities { get }
 
     // MARK: Enumeration & metadata
+    //
+    // Async because a remote backend (S3) does network I/O and can fail. Local
+    // completes without suspending, so local loading stays imperceptible.
 
     /// Children (files + folders) of `directory`, unsorted — the listing chokepoint.
-    func children(of directory: URL, includeHidden: Bool) -> [FSItem]
+    func children(of directory: URL, includeHidden: Bool) async throws -> [FSItem]
 
     /// A single item's metadata — the metadata chokepoint.
-    func metadata(for url: URL) -> FSItem
+    func metadata(for url: URL) async throws -> FSItem
 
     /// Whether `directory` contains at least one non-package subfolder (drives the
-    /// tree's disclosure triangle).
-    func hasChildFolders(at directory: URL, includeHidden: Bool) -> Bool
+    /// tree's disclosure triangle). Best-effort: failures resolve to `false`.
+    func hasChildFolders(at directory: URL, includeHidden: Bool) async -> Bool
 
     // MARK: Mutations (the FileOperations chokepoint)
 

@@ -238,7 +238,9 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func immediateItemCountText() -> String {
-        let n = Providers.provider(for: url).children(of: url, includeHidden: Preferences.shared.showHiddenFiles).count
+        // Synchronous local count (Get Info is local-only for now); S3 Get Info
+        // will use the async provider when that phase lands.
+        let n = FSItem.contents(of: url, includeHidden: Preferences.shared.showHiddenFiles).count
         return n == 1 ? "1 item" : "\(n) items"
     }
 
