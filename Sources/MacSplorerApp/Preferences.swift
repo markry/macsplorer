@@ -92,6 +92,22 @@ final class Preferences {
         set { defaults.set(newValue, forKey: "showFavorites") }
     }
 
+    /// Whether S3 is "connected" — i.e. AWS profiles are surfaced as folders under
+    /// /Volumes. Toggled by File ▸ Connect to S3 / Disconnect from S3; off by default.
+    var s3Connected: Bool {
+        get { defaults.bool(forKey: "s3Connected") }
+        set { defaults.set(newValue, forKey: "s3Connected") }
+    }
+
+    /// Folders MacSplorer reads AWS config/credentials from, in order. Empty by
+    /// default — the user explicitly adds locations (even the standard `~/.aws`)
+    /// via File ▸ S3 Credential Locations…, so there's no S3 context until they do.
+    /// Max 10 (enforced by the dialog).
+    var s3CredentialLocations: [String] {
+        get { defaults.stringArray(forKey: "s3CredentialLocations") ?? [] }
+        set { defaults.set(newValue, forKey: "s3CredentialLocations") }
+    }
+
     /// Whether the in-window menu bar is shown. On by default.
     var showMenuBar: Bool {
         get { defaults.object(forKey: "showMenuBar") as? Bool ?? true }

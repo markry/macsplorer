@@ -1,5 +1,6 @@
 import AppKit
 import MacSplorerCore
+import MacSplorerS3
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     private var windowControllers: [MainWindowController] = []
@@ -7,12 +8,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private let applyLayoutsMenu = NSMenu(title: "Apply Window Layout")
     private let deleteLayoutsMenu = NSMenu(title: "Delete Window Layout")
     private let columnsMenu = NSMenu(title: "Columns")
+    /// Watches the configured AWS credential files so new profiles appear live.
+    private let credentialWatcher = CredentialFilesWatcher()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Don't let macOS auto-insert its own icon-bearing "Enter Full Screen"
         // item into the View menu — its image column misaligns the other items.
         // We add a clean, icon-less one ourselves below.
         UserDefaults.standard.register(defaults: ["NSFullScreenMenuItemEverywhere": false])
+        // Route s3:// locations to the S3 provider. Registered here (not in the
+        // core) so MacSplorerCore never imports the AWS SDK — the app is the only
+        // place that knows about S3.
+        S3Mount.applyCredentialLocations()
+        S3ConflictMonitor.seed()   // record any launch-time conflicts without alerting
+        Providers.register(scheme: "s3") { S3Provider(url: $0) }
+        // Keep the S3 profile list live as the user edits the configured credential
+        // files (and warn on a newly-introduced conflict); re-arm on location changes.
+        credentialWatcher.onChange = { changed in
+            FolderChange.notify([S3Mount.volumesURL])
+            S3ConflictMonitor.check(changed: changed)
+        }
+        credentialWatcher.watch(folders: S3Mount.locationFolders())
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(s3LocationsChanged),
+            name: S3Mount.locationsChanged, object: nil)
         NSApp.mainMenu = makeMainMenu()
         NotificationCenter.default.addObserver(
             self, selector: #selector(windowBecameKey(_:)),
@@ -346,6 +365,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         fileMenu.addItem(terminal)
 
         fileMenu.addItem(.separator())
+        // Connect to S3 — a stateful toggle that surfaces AWS profiles as folders
+        // under /Volumes (title flips to "Disconnect from S3"; see validateMenuItem).
+        let connectS3 = NSMenuItem(title: "Connect to S3",
+                                   action: #selector(toggleS3Connection(_:)),
+                                   keyEquivalent: "")
+        connectS3.target = self
+        fileMenu.addItem(connectS3)
+        let credLocations = NSMenuItem(title: "S3 Credential Locations…",
+                                       action: #selector(showS3Credentials(_:)),
+                                       keyEquivalent: "")
+        credLocations.target = self
+        fileMenu.addItem(credLocations)
+
+        fileMenu.addItem(.separator())
         // Order matches the context menus: Calculate Folder Sizes… then Get Info.
         let calcSizes = NSMenuItem(title: "Calculate Folder Sizes…",
                                    action: #selector(calculateFolderSizes(_:)),
@@ -539,6 +572,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         keyController?.openInTerminal()
     }
 
+    private var s3CredentialsController: S3CredentialsWindowController?
+    @objc private func showS3Credentials(_ sender: Any?) {
+        if s3CredentialsController == nil {
+            let controller = S3CredentialsWindowController()
+            controller.onClose = { [weak self] in self?.s3CredentialsController = nil }
+            s3CredentialsController = controller
+        }
+        s3CredentialsController?.showWindow(nil)
+        s3CredentialsController?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func s3LocationsChanged() {
+        credentialWatcher.watch(folders: S3Mount.locationFolders())
+    }
+
+    @objc private func toggleS3Connection(_ sender: Any?) {
+        S3Mount.isConnected.toggle()
+        // Refresh /Volumes everywhere (tree + any pane showing it) so the S3
+        // profiles appear or disappear immediately.
+        FolderChange.notify([S3Mount.volumesURL])
+        // Connecting is a deliberate action — jump the frontmost tab (both panes)
+        // to /Volumes so the newly-mounted profiles are right there.
+        if S3Mount.isConnected {
+            keyController?.navigate(to: S3Mount.volumesURL)
+        }
+    }
+
     @objc private func getInfoForSelection(_ sender: Any?) {
         keyController?.getInfoForSelection()
     }
@@ -562,6 +623,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         infoWindows.append(controller)
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Show the "Copy Download Link" panel for an S3 object (retained until closed;
+    /// a second request for the same object refocuses the open panel).
+    private var downloadLinkControllers: [S3DownloadLinkWindowController] = []
+    func presentS3DownloadLink(for url: URL) {
+        guard case .prefix(let profile, _, _) = S3Location.parse(url) else { return }
+        if let existing = downloadLinkControllers.first(where: { $0.window?.title == "Copy Download Link" && $0.objectURL == url }) {
+            existing.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let controller = S3DownloadLinkWindowController(objectURL: url, profile: profile)
+        controller.onClose = { [weak self, weak controller] in
+            self?.downloadLinkControllers.removeAll { $0 === controller }
+        }
+        downloadLinkControllers.append(controller)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// Start a folder-size scan on a specific folder (a context-menu "Calculate
@@ -661,6 +741,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(closeTab(_:)):
             // Only with real tabs — never close the window via "Close Tab".
             return (keyController?.tabCount ?? 0) > 1
+        case #selector(toggleS3Connection(_:)):
+            menuItem.title = S3Mount.isConnected ? "Disconnect from S3" : "Connect to S3"
         default:
             break
         }

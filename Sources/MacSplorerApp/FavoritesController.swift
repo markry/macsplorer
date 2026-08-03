@@ -216,8 +216,10 @@ extension FavoritesController: NSTableViewDataSource, NSTableViewDelegate {
         let cell = tableView.makeView(withIdentifier: Self.cellID, owner: self) as? NSTableCellView
             ?? makeCell()
         let url = favorites[row]
-        cell.textField?.stringValue = url.lastPathComponent
-        cell.imageView?.image = NSWorkspace.shared.icon(forFile: url.path)
+        cell.textField?.stringValue = Self.favoriteLabel(url)
+        cell.imageView?.image = url.isFileURL
+            ? NSWorkspace.shared.icon(forFile: url.path)
+            : FSItem.cloudyFolderIcon   // S3 (profile/bucket/prefix) favorites
         return cell
     }
 
@@ -262,11 +264,27 @@ extension FavoritesController: NSTableViewDataSource, NSTableViewDelegate {
     }
 
     private func draggedFolderURLs(_ info: NSDraggingInfo) -> [URL] {
-        let urls = info.draggingPasteboard.readObjects(
-            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        // Not file-URLs-only: an S3 node dragged from the tree/details carries an
+        // s3:// URL, which the file-only option would drop.
+        let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self]) as? [URL] ?? []
         return urls.filter { url in
-            var isDir: ObjCBool = false
-            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+            if url.isFileURL {
+                var isDir: ObjCBool = false
+                return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+            }
+            // Remote (S3) locations are always folders in our model.
+            return url.scheme != nil
         }
+    }
+
+    /// A favorite's display name. For an S3 profile URL (`s3://profile/`) the last
+    /// path component is empty, so fall back to the host (the profile name).
+    private static func favoriteLabel(_ url: URL) -> String {
+        if !url.isFileURL, url.scheme != nil {
+            let segments = url.pathComponents.filter { $0 != "/" }
+            if let last = segments.last { return last }
+            if let host = url.host, !host.isEmpty { return host }
+        }
+        return url.lastPathComponent
     }
 }
