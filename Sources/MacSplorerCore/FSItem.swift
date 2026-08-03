@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 /// A single filesystem entry (file or folder) plus the metadata MacSplorer
 /// displays. It's a reference type so `NSOutlineView` can track tree nodes by
@@ -52,6 +53,16 @@ public final class FSItem {
     private var cachedChildrenIncludeHidden = false
     private var cachedHasSubfolders: Bool?
     private var cachedHasSubfoldersIncludeHidden = false
+
+    /// Folder children loaded from a storage provider (S3) for lazy tree expansion,
+    /// cached on the node so NSOutlineView keeps a stable identity across the async
+    /// load. nil until loaded. Distinct from `cachedFolderChildren` (synchronous,
+    /// local-disk); a remote node's children can't be read without awaiting.
+    private var cachedProviderChildren: [FSItem]?
+    public var providerChildren: [FSItem]? { cachedProviderChildren }
+    public func setProviderChildren(_ children: [FSItem]) { cachedProviderChildren = children }
+    /// Drop the cached provider children so the next expansion re-reads (Refresh).
+    public func invalidateProviderChildren() { cachedProviderChildren = nil }
 
     /// Aggregate size of a package/bundle (.app, .pvm, …), computed lazily in the
     /// background since it requires walking the bundle. nil until computed.
@@ -124,6 +135,48 @@ public final class FSItem {
         self.typeDescription = nil
         self.isParentLink = true
         self.isCloudPlaceholder = false
+    }
+
+    /// Build an item directly from a storage provider's metadata (e.g. S3), rather
+    /// than reading a local file's `URL.resourceValues`. Folders pass `byteSize` and
+    /// `modificationDate` as nil (shown blank, like local folders). S3 has no
+    /// packages, symlinks, creation/added/opened dates, or cloud-placeholder state,
+    /// so those are fixed here. `typeDescription`, when nil, is derived from the
+    /// name's extension (UTType) — or "Folder" for a directory — to match the local
+    /// "Kind" column, since there's no on-disk file to query.
+    public init(providerURL url: URL,
+                name: String,
+                isDirectory: Bool,
+                byteSize: Int?,
+                modificationDate: Date?,
+                typeDescription: String? = nil) {
+        self.url = url
+        self.name = name
+        self.isDirectory = isDirectory
+        self.isPackage = false
+        self.isSymlink = false
+        self.modificationDate = modificationDate
+        self.creationDate = nil
+        self.addedToDirectoryDate = nil
+        self.lastOpenedDate = nil
+        self.byteSize = isDirectory ? nil : byteSize
+        if let typeDescription {
+            self.typeDescription = typeDescription
+        } else if isDirectory {
+            self.typeDescription = UTType.folder.localizedDescription
+        } else {
+            self.typeDescription = FSItem.typeDescription(forExtension: (name as NSString).pathExtension)
+        }
+        self.isParentLink = false
+        self.isCloudPlaceholder = false
+    }
+
+    /// Localized "Kind" for a filename extension, matching the local Type column
+    /// (which reads `.localizedTypeDescriptionKey`). For provider-built items that
+    /// have no on-disk file to interrogate.
+    private static func typeDescription(forExtension ext: String) -> String? {
+        guard !ext.isEmpty, let type = UTType(filenameExtension: ext) else { return nil }
+        return type.localizedDescription
     }
 
     /// All entries in a directory (files + folders), unsorted. Returns [] on

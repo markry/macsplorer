@@ -279,7 +279,7 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
             } else {
                 spinner?.stopAnimation(nil)
                 cell.imageView?.isHidden = false
-                let icon = NSWorkspace.shared.icon(forFile: item.url.path)
+                let icon = item.displayIcon
                 cell.imageView?.image = item.isCloudPlaceholder ? CloudBadge.badged(icon) : icon
             }
             cell.textField?.isEditable = false

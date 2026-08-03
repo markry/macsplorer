@@ -44,5 +44,12 @@ let package = Package(
             name: "MacSplorerCoreTests",
             dependencies: ["MacSplorerCore"]
         ),
+
+        // Dev-only headless smoke test for the S3 provider (not part of the app).
+        // Run: S3_TEST_PROFILE=<profile> swift run S3Smoke  — removed before commit.
+        .executableTarget(
+            name: "S3Smoke",
+            dependencies: ["MacSplorerCore", "MacSplorerS3"]
+        ),
     ]
 )

@@ -49,6 +49,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func makeNewDocument(_ type: NewDocumentType) { activePane?.makeNewDocument(type) }
     func makeInternetShortcut() { activePane?.makeInternetShortcut() }
     @objc func openInTerminal() { activePane?.openInTerminal() }
+    /// Navigate the active tab (both panes: right pane + left tree reveal) to `url`.
+    func navigate(to url: URL) { activePane?.navigate(to: url) }
     var canOpenInTerminal: Bool { activePane?.canOpenInTerminal ?? false }
 
     /// Re-read persisted preferences into every tab, so all stay in sync.

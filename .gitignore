@@ -8,6 +8,8 @@
 # Assembled app bundle / release artifacts
 build/
 dist/
+# Machine-specific symlink into the OneDrive binaries store (release convention)
+release
 
 # macOS
 .DS_Store

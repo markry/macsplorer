@@ -1,5 +1,6 @@
 import AppKit
 import MacSplorerCore
+import MacSplorerS3
 
 /// A view that presents the contents of one folder (the details table or the
 /// icon grid). `FolderContents` drives whichever one is active through this
@@ -45,10 +46,24 @@ final class FolderContents: NSObject {
     var onOpenFolder: ((URL) -> Void)?
     /// Fresh status-bar text (item / selection counts).
     var onStatus: ((String) -> Void)?
+    /// The selection (or folder) changed — the host reflects the highlighted item's
+    /// full path in the breadcrumb. Fires on every selection change (mouse, keyboard,
+    /// hover-dwell) and after loads/mutations, alongside `onStatus`.
+    var onSelectionChanged: (() -> Void)?
+    /// Fired true when a remote (S3) load begins and false when it ends, so the
+    /// pane can show a loading spinner. Local loads complete without suspending, so
+    /// they never fire `true` (no spinner flash for instant local browsing).
+    var onLoadingChanged: ((Bool) -> Void)?
 
     /// Set by the active presenter while an inline rename is in progress, so a
     /// directory-watcher refresh doesn't yank the edit out from under it.
     var isRenaming = false
+
+    /// Set by a self-initiated create/mutation so this pane skips the reload its own
+    /// `FolderChange` broadcast would trigger — that path already reloads (awaited)
+    /// and then selects + inline-renames; a second concurrent reload would rebuild
+    /// the table mid-edit and drop the rename. Other windows still reload normally.
+    var skipsNextSelfChangeReload = false
 
     private let watcher = DirectoryWatcher()
 
@@ -64,6 +79,12 @@ final class FolderContents: NSObject {
     /// user has already navigated elsewhere can detect it's stale and drop its
     /// results instead of clobbering the newer folder.
     private var loadGeneration = 0
+
+    /// A user-facing message when the current folder failed to load (e.g. an S3
+    /// AccessDenied). Shown in the status bar in place of the item count; cleared
+    /// on a successful load. Local browsing never sets this (LocalProvider returns
+    /// [] rather than throwing).
+    private var loadErrorMessage: String?
 
     /// Whether hidden (dot) files are shown. Set, then call `reload`.
     var showHiddenFiles = false
@@ -107,6 +128,18 @@ final class FolderContents: NSObject {
         }
     }
 
+    /// Reload this pane and AWAIT completion — for callers that must act on the
+    /// fresh `items` right after (e.g. select + inline-rename a just-created file).
+    /// `reload()` is fire-and-forget; because the provider load is `async`, the new
+    /// items aren't in `items` synchronously, so those callers await this instead.
+    @MainActor
+    func reloadAndWait() async {
+        guard folder != nil else { return }
+        await loadItems()
+        presenter?.reloadContents()
+        emitStatus()
+    }
+
     /// Re-list the current folder in place, preserving the selection by path.
     func reload() {
         guard !isRenaming else { return }
@@ -140,10 +173,29 @@ final class FolderContents: NSObject {
         let gen = loadGeneration
         let target = folder
         let hidden = showHiddenFiles
-        let loaded = (try? await Providers.provider(for: target).children(of: target, includeHidden: hidden)) ?? []
-        // A newer load started while we awaited — drop these stale results.
-        guard gen == loadGeneration else { return }
-        realItems = loaded
+        // A remote (S3) load does network I/O — show a spinner + "Loading…" while it
+        // runs. Local completes without suspending, so it never flashes one.
+        let remote = !(target.isFileURL || target.scheme == nil)
+        if remote {
+            onLoadingChanged?(true)
+            onStatus?("Loading…")
+        }
+        do {
+            var loaded = try await Providers.provider(for: target).children(of: target, includeHidden: hidden)
+            // A newer load started while we awaited — drop these stale results (and
+            // leave the spinner to the newer load, which owns it now).
+            guard gen == loadGeneration else { return }
+            // Surface connected S3 profiles as folders under /Volumes.
+            if S3Mount.isVolumesRoot(target) { loaded += S3Mount.profileItems() }
+            loadErrorMessage = nil
+            realItems = loaded
+        } catch {
+            guard gen == loadGeneration else { return }
+            loadErrorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            realItems = []
+        }
+        // The latest load finished (local or remote) → ensure the spinner is off.
+        onLoadingChanged?(false)
         sortRealItems()
         composeItems()
     }
@@ -156,16 +208,32 @@ final class FolderContents: NSObject {
         }
     }
 
-    /// The parent folder to navigate up to, or nil at a volume root.
+    /// The parent folder to navigate up to, or nil at the top. For S3 a profile's
+    /// parent is /Volumes (where it's mounted); buckets/prefixes walk up within S3.
     private func parentFolder() -> URL? {
-        guard let folder, folder.standardizedFileURL.path != "/" else { return nil }
+        guard let folder else { return nil }
+        if folder.scheme == S3Location.scheme {
+            switch S3Location.parse(folder) {
+            case .profile:      return S3Mount.volumesURL
+            case .prefix:       return folder.deletingLastPathComponent()
+            case .root, .none:  return nil
+            }
+        }
+        guard folder.standardizedFileURL.path != "/" else { return nil }
         return folder.deletingLastPathComponent()
     }
 
     @objc private func folderDidChange(_ note: Notification) {
         guard let folder else { return }
         let path = folder.standardizedFileURL.path
-        if FolderChange.folders(from: note).contains(where: { $0.path == path }) { reload() }
+        guard FolderChange.folders(from: note).contains(where: { $0.path == path }) else { return }
+        // A create/mutation this pane initiated reloads (awaited) + renames itself;
+        // skip the duplicate reload its own broadcast would cause here.
+        if skipsNextSelfChangeReload {
+            skipsNextSelfChangeReload = false
+            return
+        }
+        reload()
     }
 
     // MARK: Sorting
@@ -236,6 +304,15 @@ final class FolderContents: NSObject {
     // MARK: Status
 
     func emitStatus() {
+        // Keep the breadcrumb's selection preview in step with every status refresh
+        // (selection changes route through here), before any early return.
+        onSelectionChanged?()
+        // A load failure (e.g. S3 AccessDenied) replaces the item count with a
+        // clear, actionable message rather than a misleading "0 items".
+        if let message = loadErrorMessage, realItems.isEmpty {
+            onStatus?(message)
+            return
+        }
         let count = realItems.count
         let selection = selectedIndexes().filter { !items[$0].isParentLink }
         if selection.isEmpty {
@@ -286,6 +363,11 @@ final class FolderContents: NSObject {
     func openItem(_ item: FSItem) {
         if item.isDirectory && !item.isPackage {
             onOpenFolder?(item.url)
+        } else if !item.url.isFileURL {
+            // A remote (S3) object: opening it means downloading to a local temp
+            // file first — a later phase. For now, don't hand NSWorkspace a
+            // non-file URL it can't open (which pops a confusing system dialog).
+            NSSound.beep()
         } else if item.isCloudPlaceholder {
             downloadThenOpen(item)
         } else {
