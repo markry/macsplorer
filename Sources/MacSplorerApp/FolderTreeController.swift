@@ -17,6 +17,15 @@ final class FolderTreeController: NSObject {
     private let outlineView: FolderOutlineView
     private var roots: [FSItem]
 
+    /// Stable S3 profile nodes injected under /Volumes when connected. Cached (and
+    /// rebuilt only when the profile set changes) so NSOutlineView keeps a consistent
+    /// identity per node across data-source calls.
+    private var cachedS3ProfileNodes: [FSItem] = []
+
+    /// S3 tree nodes whose async child-load is in flight, so a re-query doesn't
+    /// start a second load for the same node.
+    private var loadingNodes = Set<ObjectIdentifier>()
+
     /// Tree roots: Home, optionally the startup disk ("/"), and /Volumes.
     /// /Volumes is its own root because it carries the `hidden` flag — it never
     /// appears under "/" (the tree skips hidden items) yet is where mounted volumes
@@ -66,9 +75,9 @@ final class FolderTreeController: NSObject {
         pendingSubfolderChecks.insert(key)
         let includeHidden = showHiddenFiles
         let url = item.url
-        DispatchQueue.global(qos: .utility).async {
-            let hasSubfolders = Providers.provider(for: url).hasChildFolders(at: url, includeHidden: includeHidden)
-            DispatchQueue.main.async { [weak self] in
+        Task {
+            let hasSubfolders = await Providers.provider(for: url).hasChildFolders(at: url, includeHidden: includeHidden)
+            await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.pendingSubfolderChecks.remove(key)
                 guard includeHidden == self.showHiddenFiles else { return } // stale toggle
@@ -107,6 +116,10 @@ final class FolderTreeController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(folderDidChange(_:)),
             name: FolderChange.didChange, object: nil)
+        // Lazy-load an S3 node's children (buckets/prefixes) when it's expanded.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(itemWillExpand(_:)),
+            name: NSOutlineView.itemWillExpandNotification, object: outlineView)
         // Refresh the Volumes node when a disk mounts/unmounts/renames (eject,
         // plugging in a drive, mounting a DMG…) — these come from NSWorkspace's
         // own center, not the default one.
@@ -138,6 +151,30 @@ final class FolderTreeController: NSObject {
 
     @objc private func volumesChanged(_ note: Notification) {
         refreshSubtree(at: URL(fileURLWithPath: "/Volumes"))
+    }
+
+    /// When an S3 (non-file) node is about to expand and its children aren't loaded
+    /// yet, fetch them asynchronously, then reload + re-expand so they appear.
+    @objc private func itemWillExpand(_ note: Notification) {
+        guard let item = note.userInfo?["NSObject"] as? FSItem,
+              !item.url.isFileURL, item.providerChildren == nil else { return }
+        let id = ObjectIdentifier(item)
+        guard !loadingNodes.contains(id) else { return }
+        loadingNodes.insert(id)
+        let url = item.url
+        let hidden = showHiddenFiles
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let loaded = (try? await Providers.provider(for: url)
+                .children(of: url, includeHidden: hidden)) ?? []
+            let folders = loaded
+                .filter { $0.isDirectory && !$0.isPackage }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            item.setProviderChildren(folders)
+            self.loadingNodes.remove(id)
+            self.outlineView.reloadItem(item, reloadChildren: true)
+            if !folders.isEmpty { self.outlineView.expandItem(item) }
+        }
     }
 
     @objc private func appBecameActive() {
@@ -265,16 +302,55 @@ final class FolderTreeController: NSObject {
 extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         guard let item = item as? FSItem else { return roots.count }
-        return item.folderChildren(includeHidden: showHiddenFiles).count
+        return treeChildren(of: item).count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
         guard let item = item as? FSItem else { return roots[index] }
-        return item.folderChildren(includeHidden: showHiddenFiles)[index]
+        return treeChildren(of: item)[index]
+    }
+
+    /// A tree node's children: its local folder children, plus — under the /Volumes
+    /// root when S3 is connected — the AWS profile nodes. S3 nodes below a profile
+    /// (buckets/prefixes) need async loading, which the sync tree can't do yet, so
+    /// they aren't expanded here (see isItemExpandable); clicking a profile still
+    /// browses its buckets in the right pane.
+    private func treeChildren(of item: FSItem) -> [FSItem] {
+        // S3 (non-file) nodes: async-loaded folder children, cached on the node.
+        // Loaded lazily when the node is expanded (see itemWillExpand).
+        if !item.url.isFileURL {
+            return item.providerChildren ?? []
+        }
+        let local = item.folderChildren(includeHidden: showHiddenFiles)
+        guard S3Mount.isVolumesRoot(item.url) else { return local }
+        return local + s3ProfileNodes()
+    }
+
+    /// Stable S3 profile nodes, rebuilt only when the profile set changes so the
+    /// outline view keeps a consistent identity per node.
+    private func s3ProfileNodes() -> [FSItem] {
+        let names = S3Mount.profileNames()
+        if cachedS3ProfileNodes.map(\.name) != names {
+            // Reuse existing node instances for names that persist, so a live
+            // refresh (e.g. a profile added to a watched file) keeps already-expanded
+            // profile subtrees; only genuinely new profiles get fresh nodes.
+            let existing = Dictionary(cachedS3ProfileNodes.map { ($0.name, $0) },
+                                      uniquingKeysWith: { first, _ in first })
+            cachedS3ProfileNodes = names.map { existing[$0] ?? S3Mount.profileItem($0) }
+        }
+        return cachedS3ProfileNodes
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        guard let fsItem = item as? FSItem, fsItem.isExpandableInTree else { return false }
+        guard let fsItem = item as? FSItem else { return false }
+        // S3 (non-file) nodes: their children load over the network on expand.
+        // Optimistically expandable until loaded, then only if they really have
+        // sub-folders (so a leaf prefix's triangle drops after the load).
+        if !fsItem.url.isFileURL {
+            if let loaded = fsItem.providerChildren { return !loaded.isEmpty }
+            return true
+        }
+        guard fsItem.isExpandableInTree else { return false }
         if let known = fsItem.knownHasSubfolders(includeHidden: showHiddenFiles) {
             return known
         }
@@ -289,7 +365,7 @@ extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
         let cell = outlineView.makeView(withIdentifier: Self.cellID, owner: self) as? NSTableCellView
             ?? Self.makeCell()
         cell.textField?.stringValue = fsItem.name
-        cell.imageView?.image = NSWorkspace.shared.icon(forFile: fsItem.url.path)
+        cell.imageView?.image = fsItem.displayIcon
         return cell
     }
 
