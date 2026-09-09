@@ -1,16 +1,23 @@
-import XCTest
+import Foundation
+import Testing
 import MacSplorerCore
 
-final class FileOperationsTests: XCTestCase {
-    private var dir: URL!
+/// FileOperations behavior. Uses swift-testing (not XCTest) so the suite runs
+/// under a stand-alone swift.org toolchain — no full Xcode required, matching
+/// how MacSplorer is built and shipped (Command Line Tools only).
+///
+/// A fresh instance is created per `@Test`, so `init` / `deinit` give us the
+/// old setUp / tearDown behavior: a unique temp dir per test, cleaned up after.
+final class FileOperationsTests {
+    let dir: URL
 
-    override func setUpWithError() throws {
+    init() throws {
         dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("macsplorer-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    deinit {
         try? FileManager.default.removeItem(at: dir)
     }
 
@@ -26,81 +33,87 @@ final class FileOperationsTests: XCTestCase {
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &flag) && flag.boolValue
     }
 
-    func testCopyCreatesFileAndKeepsOriginal() throws {
+    @Test func copyCreatesFileAndKeepsOriginal() throws {
         let source = try makeFile("a.txt")
         let sub = dir.appendingPathComponent("sub")
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
         let dest = try FileOperations.copy(source, into: sub)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
-        XCTAssertEqual(dest.lastPathComponent, "a.txt")
+        #expect(FileManager.default.fileExists(atPath: dest.path))
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(dest.lastPathComponent == "a.txt")
     }
 
-    func testCopyCollisionGetsCopySuffix() throws {
+    @Test func copyCollisionGetsCopySuffix() throws {
         let source = try makeFile("a.txt")
-        XCTAssertEqual(try FileOperations.copy(source, into: dir).lastPathComponent, "a copy.txt")
-        XCTAssertEqual(try FileOperations.copy(source, into: dir).lastPathComponent, "a copy 2.txt")
+        #expect(try FileOperations.copy(source, into: dir).lastPathComponent == "a copy.txt")
+        #expect(try FileOperations.copy(source, into: dir).lastPathComponent == "a copy 2.txt")
     }
 
-    func testMoveRemovesSource() throws {
+    @Test func moveRemovesSource() throws {
         let source = try makeFile("m.txt")
         let sub = dir.appendingPathComponent("sub2")
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
         let dest = try FileOperations.move(source, into: sub)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+        #expect(FileManager.default.fileExists(atPath: dest.path))
     }
 
-    func testMoveIntoSameDirectoryIsNoop() throws {
+    @Test func moveIntoSameDirectoryIsNoop() throws {
         let source = try makeFile("same.txt")
-        XCTAssertEqual(try FileOperations.move(source, into: dir), source)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        #expect(try FileOperations.move(source, into: dir) == source)
+        #expect(FileManager.default.fileExists(atPath: source.path))
     }
 
-    func testRename() throws {
+    @Test func rename() throws {
         let source = try makeFile("old.txt")
         let dest = try FileOperations.rename(source, to: "new.txt")
-        XCTAssertEqual(dest.lastPathComponent, "new.txt")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+        #expect(dest.lastPathComponent == "new.txt")
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+        #expect(FileManager.default.fileExists(atPath: dest.path))
     }
 
-    func testRenameEmptyOrUnchangedIsNoop() throws {
+    @Test func renameEmptyOrUnchangedIsNoop() throws {
         let source = try makeFile("keep.txt")
-        XCTAssertEqual(try FileOperations.rename(source, to: "   "), source)
-        XCTAssertEqual(try FileOperations.rename(source, to: "keep.txt"), source)
+        #expect(try FileOperations.rename(source, to: "   ") == source)
+        #expect(try FileOperations.rename(source, to: "keep.txt") == source)
     }
 
-    func testRenameToExistingNameThrowsFileExists() throws {
+    @Test func renameToExistingNameThrowsFileExists() throws {
         // Mirrors the reported bug: renaming a just-created folder to an existing
         // folder's name must THROW (fileWriteFileExists) so the UI can report it,
         // rather than failing silently. Also asserts the source is left intact.
         _ = try FileOperations.newFolder(in: dir, named: "Existing")
         let other = try FileOperations.newFolder(in: dir, named: "Temp")
-        XCTAssertThrowsError(try FileOperations.rename(other, to: "Existing")) { error in
-            XCTAssertEqual((error as? CocoaError)?.code, .fileWriteFileExists)
+        do {
+            _ = try FileOperations.rename(other, to: "Existing")
+            Issue.record("expected rename to an existing name to throw")
+        } catch {
+            #expect((error as? CocoaError)?.code == .fileWriteFileExists)
         }
-        XCTAssertTrue(isDirectory(other))
+        #expect(isDirectory(other))
     }
 
-    func testRenameWithPathSeparatorThrowsInvalidName() throws {
+    @Test func renameWithPathSeparatorThrowsInvalidName() throws {
         let source = try makeFile("safe.txt")
-        XCTAssertThrowsError(try FileOperations.rename(source, to: "a/b")) { error in
-            XCTAssertEqual((error as? CocoaError)?.code, .fileWriteInvalidFileName)
+        do {
+            _ = try FileOperations.rename(source, to: "a/b")
+            Issue.record("expected rename with a path separator to throw")
+        } catch {
+            #expect((error as? CocoaError)?.code == .fileWriteInvalidFileName)
         }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        #expect(FileManager.default.fileExists(atPath: source.path))
     }
 
-    func testNewFolderAndCollision() throws {
+    @Test func newFolderAndCollision() throws {
         let first = try FileOperations.newFolder(in: dir, named: "Stuff")
-        XCTAssertTrue(isDirectory(first))
+        #expect(isDirectory(first))
         let second = try FileOperations.newFolder(in: dir, named: "Stuff")
-        XCTAssertEqual(second.lastPathComponent, "Stuff copy")
+        #expect(second.lastPathComponent == "Stuff copy")
     }
 
-    func testMoveToTrashRemovesFromSource() throws {
+    @Test func moveToTrashRemovesFromSource() throws {
         let source = try makeFile("trash-me.txt")
         _ = try FileOperations.moveToTrash(source)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        #expect(!FileManager.default.fileExists(atPath: source.path))
     }
 }
