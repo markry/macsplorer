@@ -1,5 +1,6 @@
 import AppKit
 import MacSplorerCore
+import MacSplorerS3
 import UniformTypeIdentifiers
 
 // MARK: - File-operation commands (shared by the list and the grid)
@@ -194,15 +195,30 @@ extension FolderContents {
     /// Broadcast the affected folders (refreshing this + other windows + the tree),
     /// then select/begin-rename newly-created items in this folder.
     func finishMutation(affected: Set<URL>, selecting names: [String] = [], renameFirst: Bool = false) {
+        guard !names.isEmpty else {
+            FolderChange.notify(Array(affected))   // nothing to select — a normal reload is fine
+            return
+        }
+        // We reload (awaited) + select + rename ourselves below, so skip the duplicate
+        // reload this pane's own broadcast would trigger — a second reload rebuilding
+        // the table mid-edit is what dropped the rename intermittently. Other windows
+        // and the tree still update from the notify.
+        skipsNextSelfChangeReload = true
         FolderChange.notify(Array(affected))
-        guard !names.isEmpty else { return }
-        let wanted = Set(names)
-        let rows = items.enumerated()
-            .filter { wanted.contains($0.element.url.lastPathComponent) }
-            .map(\.offset)
-        guard !rows.isEmpty else { return }
-        presenter?.selectItems(at: IndexSet(rows))
-        if renameFirst, let name = names.first { beginRenameDeferred(named: name) }
+        // The provider reload is async, so the newly-created items aren't in `items`
+        // synchronously. Await the reload, THEN select + begin-rename — deterministic,
+        // unlike racing a timer against the reload.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.reloadAndWait()
+            let wanted = Set(names)
+            let rows = self.items.enumerated()
+                .filter { wanted.contains($0.element.url.lastPathComponent) }
+                .map(\.offset)
+            guard !rows.isEmpty else { return }
+            self.presenter?.selectItems(at: IndexSet(rows))
+            if renameFirst, let name = names.first { self.beginRenameDeferred(named: name) }
+        }
     }
 
     // Folder commands by URL — for the tree's context menu to call.
@@ -486,6 +502,11 @@ extension FolderContents {
                                                 setDefaultAction: #selector(ctxSetDefaultApp(_:)))
             menu.addItem(openWith)
         }
+        // Presigned download link — S3 objects only (not folders/prefixes).
+        if item.url.scheme == S3Location.scheme && !isFolder {
+            menu.addItem(.separator())
+            add(menu, "Copy Download Link…", #selector(ctxDownloadLink(_:)), target)
+        }
         menu.addItem(.separator())
         add(menu, "Cut", #selector(ctxCut(_:)), target)
         add(menu, "Copy", #selector(ctxCopy(_:)), target)
@@ -557,6 +578,10 @@ extension FolderContents {
     }
     @objc func ctxCopyPath(_ sender: Any?) { copySelectionPaths() }
     @objc func ctxTerminal(_ sender: Any?) { openSelectionInTerminal() }
+    @objc func ctxDownloadLink(_ sender: Any?) {
+        guard let url = selectedURLs().first(where: { $0.scheme == S3Location.scheme }) else { return }
+        (NSApp.delegate as? AppDelegate)?.presentS3DownloadLink(for: url)
+    }
 
     @objc func ctxAddFavorite(_ sender: Any?) {
         if let url = selectedFolderForFavorite() { Favorites.shared.add(url) }

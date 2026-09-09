@@ -1,5 +1,6 @@
 import AppKit
 import MacSplorerCore
+import MacSplorerS3
 
 /// One tab's worth of browsing: a copyable path/address bar (the FAB) on top, a
 /// two-pane split (folder tree | details table), and a status bar below. It
@@ -9,8 +10,22 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
     private let addressField = AddressTextField()
     private let pathBar = PathBarView()
+
+    // Browser-style back/forward: two chevrons left of the address bar, driving a
+    // per-tab history of visited folders. `historyIndex` points at the current
+    // entry; going back/forward moves within it, navigating fresh truncates the
+    // forward tail. `isNavigatingHistory` stops back/forward from re-recording.
+    private let backButton = NSButton()
+    private let forwardButton = NSButton()
+    private var history: [URL] = []
+    private var historyIndex = -1
+    private var isNavigatingHistory = false
     private var addressFieldEditor: AddressFieldEditor?
     private let statusLabel = NSTextField(labelWithString: "")
+    /// Spinner shown at the leading edge of the status bar while a remote (S3)
+    /// folder is loading — feedback that a network read is in flight.
+    private let loadSpinner = NSProgressIndicator()
+    private let statusStack = NSStackView()
     private let viewModeControl = ViewModeControl()
 
     // Folder-size scan (occasional, background) — status-bar feedback + Stop.
@@ -205,17 +220,93 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
     // MARK: - Navigation
 
+    /// A stable identity for a location so re-navigating to the same place is a
+    /// no-op. File URLs compare by standardized path (case/symlink-tolerant); a
+    /// remote URL (s3://…) compares by full string, since two different profiles
+    /// or buckets can share a path component and must not be treated as identical.
+    private func locationKey(_ url: URL?) -> String? {
+        guard let url else { return nil }
+        return isLocal(url) ? url.standardizedFileURL.path : url.absoluteString
+    }
+
+    /// Local = a file URL or a bare path (no scheme); anything with a non-file
+    /// scheme (s3://) is a remote provider location.
+    private func isLocal(_ url: URL) -> Bool { url.isFileURL || url.scheme == nil }
+
+    /// The editable address-field text for `url`. Local: the plain path. S3: the
+    /// real S3 URI `s3://bucket/key` at bucket level or deeper (a genuine URI AWS
+    /// tools accept); `/Volumes/profile` at the profile level, where no S3 URI
+    /// exists yet. (The breadcrumb chips, shown when not editing, are separate.)
+    private func addressString(for url: URL) -> String {
+        guard !isLocal(url) else { return url.path }
+        switch S3Location.parse(url) {
+        case .prefix(_, let bucket, let key): return "s3://\(bucket)/\(key)"
+        case .profile(let profile):           return "\(S3Mount.volumesURL.path)/\(profile)"
+        case .root, .none:                     return S3Mount.volumesURL.path
+        }
+    }
+
+    /// The window/tab title for `url` — the last meaningful segment (prefix or
+    /// bucket), else the profile (host), else the scheme ("S3") for the root.
+    private func locationTitle(for url: URL) -> String {
+        if !isLocal(url) {
+            let segments = url.pathComponents.filter { $0 != "/" }
+            if let last = segments.last { return last }
+            if let host = url.host, !host.isEmpty { return host }
+            return url.scheme?.uppercased() ?? "MacSplorer"
+        }
+        let name = url.lastPathComponent
+        return name.isEmpty ? "MacSplorer" : name
+    }
+
     /// Update the details table + address bar + title for `url`. Idempotent, so
     /// the tree-reveal round-trip can call back in without reloading or looping.
     private func showFolder(_ url: URL) {
-        guard contents.folder?.standardizedFileURL.path != url.standardizedFileURL.path
-        else { return }
+        guard locationKey(contents.folder) != locationKey(url) else { return }
         contents.show(folder: url)
-        addressField.stringValue = url.path
+        addressField.stringValue = addressString(for: url)
         pathBar.setURL(url)
         updateTerminalButton()
-        let name = url.lastPathComponent
-        onTitleChange?(name.isEmpty ? "MacSplorer" : name)
+        onTitleChange?(locationTitle(for: url))
+        recordHistory(url)
+    }
+
+    // MARK: - Back / Forward history
+
+    /// Append `url` as the new current entry (unless we're moving through history),
+    /// dropping any forward entries — the browser convention.
+    private func recordHistory(_ url: URL) {
+        guard !isNavigatingHistory else { return }
+        if historyIndex < history.count - 1 {
+            history.removeSubrange((historyIndex + 1)...)
+        }
+        history.append(url)
+        historyIndex = history.count - 1
+        updateHistoryButtons()
+    }
+
+    @objc private func goBack() {
+        guard historyIndex > 0 else { return }
+        historyIndex -= 1
+        navigateThroughHistory(to: history[historyIndex])
+    }
+
+    @objc private func goForward() {
+        guard historyIndex < history.count - 1 else { return }
+        historyIndex += 1
+        navigateThroughHistory(to: history[historyIndex])
+    }
+
+    private func navigateThroughHistory(to url: URL) {
+        isNavigatingHistory = true
+        navigate(to: url)
+        isNavigatingHistory = false
+        updateHistoryButtons()
+    }
+
+    private func updateHistoryButtons() {
+        backButton.isEnabled = historyIndex > 0
+        forwardButton.isEnabled = historyIndex < history.count - 1
     }
 
     /// External navigation (address bar, double-click in the details pane): show
@@ -223,10 +314,52 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// current location.
     func navigate(to url: URL) {
         showFolder(url)
-        treeController.reveal(url)
+        // The left tree is local-only for now; revealing a remote (s3://) location
+        // would spuriously match the "/" root by path prefix. Skip it.
+        if isLocal(url) { treeController.reveal(url) }
+    }
+
+    /// The AWS profile of the current S3 location, if we're in one.
+    private func currentS3Profile() -> String? {
+        guard let folder = contents.folder else { return nil }
+        switch S3Location.parse(folder) {
+        case .profile(let profile):      return profile
+        case .prefix(let profile, _, _): return profile
+        default:                         return nil
+        }
+    }
+
+    /// If `path` is `/Volumes/<name>` and <name> is a connected S3 profile, returns
+    /// that name — so typing the profile-level address navigates back into S3.
+    private func s3ProfileFromVolumesPath(_ path: String) -> String? {
+        let trimmed = (path.count > 1 && path.hasSuffix("/")) ? String(path.dropLast()) : path
+        let prefix = S3Mount.volumesURL.path + "/"
+        guard trimmed.hasPrefix(prefix) else { return nil }
+        let name = String(trimmed.dropFirst(prefix.count))
+        guard !name.isEmpty, !name.contains("/"), S3Mount.profileNames().contains(name) else { return nil }
+        return name
     }
 
     @objc private func addressEntered() {
+        let entered = addressField.stringValue.trimmingCharacters(in: .whitespaces)
+        // A real S3 URI (s3://bucket/key): reattach the active profile → the internal
+        // s3://profile/bucket/key. Needs an S3 context to know which profile.
+        if entered.lowercased().hasPrefix("s3://") {
+            guard let profile = currentS3Profile(),
+                  let url = S3Location.url(fromUserURI: entered, profile: profile) else {
+                NSSound.beep(); return
+            }
+            navigate(to: url)
+            setAddress(addressString(for: url), cursorAtEnd: true)
+            return
+        }
+        // /Volumes/<profile> for a connected S3 profile → that profile's S3 root.
+        if let profile = s3ProfileFromVolumesPath(entered) {
+            let url = S3Location.url(profile: profile)
+            navigate(to: url)
+            setAddress(addressString(for: url), cursorAtEnd: true)
+            return
+        }
         let raw = (addressField.stringValue as NSString).expandingTildeInPath
         let trimmed = (raw.count > 1 && raw.hasSuffix("/")) ? String(raw.dropLast()) : raw
         var isDirectory: ObjCBool = false
@@ -424,6 +557,13 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         contents.onStatus = { [weak self] status in
             self?.statusLabel.stringValue = status
         }
+        contents.onSelectionChanged = { [weak self] in self?.refreshPathBarForSelection() }
+        contents.onLoadingChanged = { [weak self] loading in
+            guard let self else { return }
+            self.loadSpinner.isHidden = !loading
+            if loading { self.loadSpinner.startAnimation(nil) }
+            else { self.loadSpinner.stopAnimation(nil) }
+        }
 
         addressField.target = self
         addressField.action = #selector(addressEntered)
@@ -518,13 +658,27 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         pathBar.isHidden = editing
     }
 
+    /// Reflect the current selection in the breadcrumb: when exactly one item is
+    /// highlighted, show its full path with the name as a dimmed leaf — so the path
+    /// on screen always matches what ⌘C copies. None / multi-selection falls back to
+    /// the current folder. Skipped while the editable field is showing.
+    private func refreshPathBarForSelection() {
+        guard !pathBar.isHidden else { return }
+        let selected = contents.selectedURLs()
+        if selected.count == 1 {
+            pathBar.setURL(selected[0], previewLeaf: true)
+        } else {
+            pathBar.setURL(contents.folder)
+        }
+    }
+
     /// Enter edit mode: reveal the field with the full real path, a trailing "/"
     /// appended and the cursor placed after it — so you can immediately keep
     /// typing the next segment, just like descending with the FAB.
     private func beginAddressEditing() {
         setEditing(true)
-        let path = contents.folder?.path ?? addressField.stringValue
-        let text = path.hasSuffix("/") ? path : path + "/"
+        let base = contents.folder.map(addressString(for:)) ?? addressField.stringValue
+        let text = base.hasSuffix("/") ? base : base + "/"
         addressField.stringValue = text
         updateTerminalButton()
         view.window?.makeFirstResponder(addressField)
@@ -553,11 +707,26 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
         pathBar.translatesAutoresizingMaskIntoConstraints = false
         configureScanControls()
+        configureHistoryButtons()
+        root.addSubview(backButton)
+        root.addSubview(forwardButton)
         root.addSubview(addressField)
         root.addSubview(pathBar)
         root.addSubview(terminalButton)
         root.addSubview(splitView)
-        root.addSubview(statusLabel)
+        loadSpinner.style = .spinning
+        loadSpinner.controlSize = .small
+        loadSpinner.isDisplayedWhenStopped = false
+        loadSpinner.isHidden = true
+        loadSpinner.translatesAutoresizingMaskIntoConstraints = false
+        statusStack.orientation = .horizontal
+        statusStack.spacing = 5
+        statusStack.alignment = .centerY
+        statusStack.detachesHiddenViews = true   // collapse the spinner when hidden
+        statusStack.translatesAutoresizingMaskIntoConstraints = false
+        statusStack.addArrangedSubview(loadSpinner)
+        statusStack.addArrangedSubview(statusLabel)
+        root.addSubview(statusStack)
         root.addSubview(scanControls)
         root.addSubview(viewModeControl)
 
@@ -566,8 +735,16 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         leftWidth.priority = .defaultLow
 
         NSLayoutConstraint.activate([
+            // Back / forward chevrons at the leading edge, then the address field.
+            backButton.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: pad),
+            backButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
+            backButton.widthAnchor.constraint(equalToConstant: 24),
+            forwardButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 2),
+            forwardButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
+            forwardButton.widthAnchor.constraint(equalToConstant: 24),
+
             addressField.topAnchor.constraint(equalTo: root.topAnchor, constant: pad),
-            addressField.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: pad),
+            addressField.leadingAnchor.constraint(equalTo: forwardButton.trailingAnchor, constant: 6),
             addressField.trailingAnchor.constraint(equalTo: terminalButton.leadingAnchor, constant: -6),
 
             terminalButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
@@ -584,10 +761,10 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
             splitView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             splitView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
 
-            statusLabel.topAnchor.constraint(equalTo: splitView.bottomAnchor, constant: 4),
-            statusLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: pad),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: scanControls.leadingAnchor, constant: -8),
-            statusLabel.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
+            statusStack.topAnchor.constraint(equalTo: splitView.bottomAnchor, constant: 4),
+            statusStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: pad),
+            statusStack.trailingAnchor.constraint(lessThanOrEqualTo: scanControls.leadingAnchor, constant: -8),
+            statusStack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
 
             // Scan spinner + Stop sit just left of the view switch (collapsed when
             // idle — the stack drops its hidden subviews).
@@ -674,6 +851,25 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         // forcing the window wider.
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    }
+
+    private func configureHistoryButtons() {
+        func configure(_ button: NSButton, symbol: String, tip: String,
+                       action: Selector, key: String) {
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
+            button.bezelStyle = .texturedRounded
+            button.imagePosition = .imageOnly
+            button.controlSize = .small
+            button.target = self
+            button.action = action
+            button.toolTip = tip
+            button.keyEquivalent = key                       // ⌘[ / ⌘] — the macOS convention
+            button.keyEquivalentModifierMask = [.command]
+            button.isEnabled = false                         // enabled by updateHistoryButtons
+            button.translatesAutoresizingMaskIntoConstraints = false
+        }
+        configure(backButton, symbol: "chevron.left", tip: "Back", action: #selector(goBack), key: "[")
+        configure(forwardButton, symbol: "chevron.right", tip: "Forward", action: #selector(goForward), key: "]")
     }
 
     private func configureScanControls() {

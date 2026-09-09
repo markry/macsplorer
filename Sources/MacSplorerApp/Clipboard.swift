@@ -21,7 +21,25 @@ final class Clipboard {
         self.operation = operation
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.writeObjects(urls as [NSURL])
+        // Write each item carrying BOTH flavors, the way Finder's own copy does:
+        //   • the file-URL flavor, so Finder / MacSplorer paste it as a file
+        //     operation (copy/move); and
+        //   • a plain-text POSIX path, so a terminal, editor, or Claude prompt paste
+        //     yields a clean path.
+        // `writeObjects([NSURL])` alone offers only a file:// URL for the text flavor,
+        // which text targets mishandle or reject. Non-file URLs (e.g. s3://) can't be
+        // a file operation, so they carry just their string form.
+        let items: [NSPasteboardItem] = urls.map { url in
+            let item = NSPasteboardItem()
+            if url.isFileURL {
+                item.setString(url.absoluteString, forType: .fileURL)
+                item.setString(url.path, forType: .string)
+            } else {
+                item.setString(url.absoluteString, forType: .string)
+            }
+            return item
+        }
+        pasteboard.writeObjects(items)
         writtenChangeCount = pasteboard.changeCount
     }
 

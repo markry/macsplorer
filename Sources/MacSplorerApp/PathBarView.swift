@@ -45,12 +45,22 @@ final class PathBarView: NSView {
         layer?.borderColor = NSColor.separatorColor.cgColor
     }
 
-    func setURL(_ url: URL?) {
+    /// Render `url` as breadcrumb segments. With `previewLeaf`, the final segment
+    /// is drawn as a dimmed, non-clickable label rather than a navigation button —
+    /// used to preview the highlighted item's name (what ⌘C would copy) without
+    /// making the file itself a jump target.
+    func setURL(_ url: URL?, previewLeaf: Bool = false) {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         guard let url else { return }
-        let segs = segments(for: url, home: FileManager.default.homeDirectoryForCurrentUser)
+        let segs = (url.scheme != nil && !url.isFileURL)
+            ? remoteSegments(for: url)
+            : segments(for: url, home: FileManager.default.homeDirectoryForCurrentUser)
         for (index, segment) in segs.enumerated() {
             if index > 0 { stack.addArrangedSubview(makeSeparator()) }
+            if previewLeaf && index == segs.count - 1 {
+                stack.addArrangedSubview(makeLeafLabel(title: segment.title))
+                continue
+            }
             // The home root shows a little house icon rather than a bare "~".
             let symbol = (segment.title == "~") ? "house.fill" : nil
             stack.addArrangedSubview(makeButton(title: segment.title, symbol: symbol, url: segment.url))
@@ -88,6 +98,29 @@ final class PathBarView: NSView {
         return result
     }
 
+    /// Breadcrumb segments for a remote provider URL (e.g. `s3://profile/bucket/prefix/`).
+    /// The S3 namespace is mounted under /Volumes, so the trail roots there
+    /// (Volumes → profile → bucket → prefix). The first crumb is the real
+    /// `file:///Volumes`; the rest carry the `s3://…` URL that navigates to them
+    /// (trimming path components off the same host), so a click re-navigates through
+    /// the normal provider path rather than a bogus local path.
+    private func remoteSegments(for url: URL) -> [(title: String, url: URL)] {
+        var result: [(String, URL)] = [("Volumes", URL(fileURLWithPath: "/Volumes"))]
+        guard let host = url.host, !host.isEmpty else { return result }
+        func rebuilt(path: String) -> URL? {
+            guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+            c.host = host; c.path = path; c.query = nil; c.fragment = nil
+            return c.url
+        }
+        if let profile = rebuilt(path: "/") { result.append((host, profile)) }
+        var accumulated = "/"
+        for component in url.pathComponents.filter({ $0 != "/" }) {
+            accumulated += component + "/"
+            if let u = rebuilt(path: accumulated) { result.append((component, u)) }
+        }
+        return result
+    }
+
     private func makeButton(title: String, symbol: String? = nil, url: URL) -> NSButton {
         let button = SegmentButton(title: title, target: self, action: #selector(segmentClicked(_:)))
         button.url = url
@@ -107,6 +140,16 @@ final class PathBarView: NSView {
             button.toolTip = "Home"
         }
         return button
+    }
+
+    /// A non-clickable, dimmed leaf crumb previewing the highlighted item's name.
+    private func makeLeafLabel(title: String) -> NSView {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingMiddle
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return label
     }
 
     private func makeSeparator() -> NSView {

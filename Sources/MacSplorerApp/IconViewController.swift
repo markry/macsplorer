@@ -495,9 +495,13 @@ final class IconItem: NSCollectionViewItem {
         // download badge so it's clear they aren't on disk yet — but not while the
         // spinner is up (it already conveys "downloading").
         let placeholder = item.isCloudPlaceholder && !downloading
-        let icon = NSWorkspace.shared.icon(forFile: item.url.path)
-        let initial = Thumbnailer.shared.cached(for: item.url, edge: edge) ?? icon
+        let icon = item.displayIcon
+        // QuickLook thumbnails need a real local file; a remote (S3) item has none,
+        // so use its icon and skip the thumbnail request entirely.
+        let isLocalFile = item.url.isFileURL
+        let initial = (isLocalFile ? Thumbnailer.shared.cached(for: item.url, edge: edge) : nil) ?? icon
         thumb.image = placeholder ? CloudBadge.badged(initial) : initial
+        guard isLocalFile else { return }
         let scale = view.window?.backingScaleFactor ?? 2
         Thumbnailer.shared.thumbnail(for: item.url, edge: edge, scale: scale) { [weak self] image in
             // Guard against cell reuse: only apply if still showing the same file.
