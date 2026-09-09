@@ -124,9 +124,32 @@ extension FolderContents {
                            selecting: [dest.lastPathComponent])
             return true
         } catch {
-            NSSound.beep()
+            reportRenameFailure(name: trimmed, error: error)
             return false
         }
+    }
+
+    /// Surface a rename failure with a clear reason instead of just a beep. The
+    /// common case — the typed name already exists (e.g. renaming a just-created
+    /// "untitled folder" to an existing folder's name) — otherwise looks like the
+    /// rename silently did nothing: no message, the label just snaps back.
+    private func reportRenameFailure(name: String, error: Error) {
+        let alert = NSAlert()
+        switch (error as? CocoaError)?.code {
+        case .fileWriteFileExists:
+            alert.messageText = "The name “\(name)” is already taken."
+            alert.informativeText =
+                "An item named “\(name)” already exists in this folder. Please choose a different name."
+        case .fileWriteInvalidFileName:
+            alert.messageText = "“\(name)” isn’t a valid name."
+            alert.informativeText = "A name can’t contain “/” or “:”. Please choose a different name."
+        default:
+            alert.messageText = "Couldn’t rename to “\(name)”."
+            alert.informativeText = error.localizedDescription
+        }
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     /// Create a new folder in `directory` (the current folder if nil), then select
