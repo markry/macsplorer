@@ -71,6 +71,26 @@ final class FileOperationsTests: XCTestCase {
         XCTAssertEqual(try FileOperations.rename(source, to: "keep.txt"), source)
     }
 
+    func testRenameToExistingNameThrowsFileExists() throws {
+        // Mirrors the reported bug: renaming a just-created folder to an existing
+        // folder's name must THROW (fileWriteFileExists) so the UI can report it,
+        // rather than failing silently. Also asserts the source is left intact.
+        _ = try FileOperations.newFolder(in: dir, named: "Existing")
+        let other = try FileOperations.newFolder(in: dir, named: "Temp")
+        XCTAssertThrowsError(try FileOperations.rename(other, to: "Existing")) { error in
+            XCTAssertEqual((error as? CocoaError)?.code, .fileWriteFileExists)
+        }
+        XCTAssertTrue(isDirectory(other))
+    }
+
+    func testRenameWithPathSeparatorThrowsInvalidName() throws {
+        let source = try makeFile("safe.txt")
+        XCTAssertThrowsError(try FileOperations.rename(source, to: "a/b")) { error in
+            XCTAssertEqual((error as? CocoaError)?.code, .fileWriteInvalidFileName)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+    }
+
     func testNewFolderAndCollision() throws {
         let first = try FileOperations.newFolder(in: dir, named: "Stuff")
         XCTAssertTrue(isDirectory(first))
