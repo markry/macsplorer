@@ -1,6 +1,9 @@
 import AppKit
 import MacSplorerCore
 import MacSplorerS3
+#if canImport(MacSplorerPlugins)
+import MacSplorerPlugins
+#endif
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     private var windowControllers: [MainWindowController] = []
@@ -22,6 +25,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         S3Mount.applyCredentialLocations()
         S3ConflictMonitor.seed()   // record any launch-time conflicts without alerting
         Providers.register(scheme: "s3") { S3Provider(url: $0) }
+        // Optional private provider modules, present only in checkouts that carry
+        // them (see Package.swift). Compiles to nothing when absent, so the same
+        // source builds with or without them.
+        #if canImport(MacSplorerPlugins)
+        Plugins.registerAll()
+        #endif
         // Keep the S3 profile list live as the user edits the configured credential
         // files (and warn on a newly-introduced conflict); re-arm on location changes.
         credentialWatcher.onChange = { changed in
