@@ -553,6 +553,9 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         favoritesController.onFolderCommand = { [weak self] command, url in
             self?.handleFolderCommand(command, url: url)
         }
+        // Let a drop *onto* a favorite row copy/move into that folder, using the
+        // same transfer machinery as the file list.
+        favoritesController.contents = contents
         contents.onOpenFolder = { [weak self] url in self?.navigate(to: url) }
         contents.onStatus = { [weak self] status in
             self?.statusLabel.stringValue = status
