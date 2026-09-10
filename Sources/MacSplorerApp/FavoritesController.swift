@@ -48,6 +48,11 @@ final class FavoritesController: NSObject {
     /// File-operation commands from the context menu, routed to the shared model
     /// (same handler as the tree) so the menu is fully functional.
     var onFolderCommand: ((FolderCommand, URL) -> Void)?
+    /// The pane's shared model, which owns the transfer machinery (collision
+    /// prompts, ⌥-copy, the right-drag menu, promised files). Set by the host so a
+    /// drop *onto* a favorite behaves exactly like a drop onto a folder in the
+    /// file list. Weak: the model outlives nothing here and owns no reference back.
+    weak var contents: FolderContents?
 
     let view = NSView()
     /// Fired when the favorites count changes, so the host can re-fit the
@@ -98,7 +103,9 @@ final class FavoritesController: NSObject {
         tableView.target = self
         tableView.action = #selector(rowClicked)
         tableView.onContextMenu = { [weak self] row in self?.contextMenu(forRow: row) }
-        tableView.registerForDraggedTypes([.fileURL])
+        // Promise types too, so a drag out of Outlook/Mail/Photos can land in a
+        // favorite the same way it lands in the file list.
+        tableView.registerForDraggedTypes([.fileURL] + FolderContents.promiseDragTypes)
         tableView.reloadData()
         NotificationCenter.default.addObserver(
             self, selector: #selector(favoritesDidChange), name: Favorites.didChange, object: nil)
@@ -243,16 +250,34 @@ extension FavoritesController: NSTableViewDataSource, NSTableViewDelegate {
         return favorites[row] as NSURL
     }
 
+    // Two drop targets, distinguished the way Finder's sidebar does it (and drawn
+    // for free by AppKit — a row highlight vs. an insertion line):
+    //   ON a row      → copy/move the dragged items INTO that folder
+    //   BETWEEN rows  → add/reorder favorites
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo,
                    proposedRow row: Int,
                    proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+        if dropOperation == .on, !isReorderDrag(info), let _ = dropTarget(forRow: row) {
+            if let operation = contents?.dragOperation(for: info), operation != [] { return operation }
+            // Promised files (Outlook/Mail/Photos/…) are always copied in.
+            let promises = contents?.promiseReceivers(from: info) ?? []
+            if !promises.isEmpty { return .copy }
+            return []
+        }
+        // Insert-between only means something for folders — they're the only thing
+        // that can BE a favorite. A file dragged here has no such meaning, so reject
+        // it rather than snapping it onto a neighbouring row: a mis-aimed drop that
+        // silently *moved* a file into the wrong folder is worth designing out.
         guard !draggedFolderURLs(info).isEmpty else { return [] }
-        tableView.setDropRow(row, dropOperation: .above) // always insert between rows
+        tableView.setDropRow(row, dropOperation: .above)
         return .generic
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo,
                    row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
+        if dropOperation == .on, !isReorderDrag(info), let destination = dropTarget(forRow: row) {
+            return drop(info, into: destination)
+        }
         let urls = draggedFolderURLs(info)
         guard !urls.isEmpty else { return false }
         var index = row
@@ -260,6 +285,58 @@ extension FavoritesController: NSTableViewDataSource, NSTableViewDelegate {
             Favorites.shared.insert(url, at: index)
             index += 1
         }
+        return true
+    }
+
+    /// A drag that started in this list is a *reorder*, so it never targets a row.
+    /// Otherwise a slightly-low drop while reordering would silently move one
+    /// favorite folder inside another — a real filesystem move. You can still move
+    /// a folder into a favorite by dragging it from the file list.
+    private func isReorderDrag(_ info: NSDraggingInfo) -> Bool {
+        (info.draggingSource as? NSTableView) === tableView
+    }
+
+    /// The favorite at `row`, if it can accept a drop. S3 favorites are read-only,
+    /// so they're refused up front (no drop highlight) instead of accepting the
+    /// drop and then failing with an error alert.
+    private func dropTarget(forRow row: Int) -> URL? {
+        guard row >= 0, row < favorites.count else { return nil }
+        let url = favorites[row]
+        return url.isFileURL ? url : nil
+    }
+
+    /// Copy/move the dragged items into `destination` via the shared model, so a
+    /// drop here gets the same collision prompts, ⌥-copy, right-drag Copy/Move
+    /// menu, and promised-file support as a drop in the file list.
+    private func drop(_ info: NSDraggingInfo, into destination: URL) -> Bool {
+        guard let contents else { return false }
+        let urls = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        if !urls.isEmpty {
+            // A right-button drag asks the user copy vs move on drop.
+            if RightDragSource.shared.isActive {
+                let point = tableView.convert(info.draggingLocation, from: nil)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    contents.showRightDropMenu(urls: urls, into: destination,
+                                               at: point, in: self.tableView)
+                }
+                return true
+            }
+            let move = contents.dragOperation(for: info) == .move
+            // Select what landed only if the favorite happens to be the folder the
+            // pane is already showing.
+            let selectLanded = contents.samePath(destination, contents.folder)
+            DispatchQueue.main.async {
+                contents.performTransfer(urls, into: destination,
+                                         move: move, selectLanded: selectLanded)
+            }
+            return true
+        }
+        // No file URLs — accept promised files (Outlook, Mail, Photos, …).
+        let receivers = contents.promiseReceivers(from: info)
+        guard !receivers.isEmpty else { return false }
+        contents.receivePromisedFiles(receivers, into: destination)
         return true
     }
 
