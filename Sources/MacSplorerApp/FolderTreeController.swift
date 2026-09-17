@@ -26,6 +26,17 @@ final class FolderTreeController: NSObject {
     /// start a second load for the same node.
     private var loadingNodes = Set<ObjectIdentifier>()
 
+    /// Stable provider-mount nodes under /Volumes, cached like the S3 profile nodes.
+    private var cachedMountNodes: [FSItem] = []
+
+    /// Bumped by every reveal, so an in-flight remote reveal (which awaits network
+    /// listings level by level) abandons itself once the user has moved on.
+    private var revealGeneration = 0
+
+    /// Set while the tree selects a row itself (a remote reveal), so that selection
+    /// isn't reported back as a user navigation.
+    private var suppressSelectCallback = false
+
     /// Tree roots: Home, optionally the startup disk ("/"), and /Volumes.
     /// /Volumes is its own root because it carries the `hidden` flag — it never
     /// appears under "/" (the tree skips hidden items) yet is where mounted volumes
@@ -92,8 +103,23 @@ final class FolderTreeController: NSObject {
     /// Rebuild the tree (e.g. after toggling hidden files) and re-reveal the
     /// given location so the user doesn't lose their place.
     func refresh(revealing url: URL?) {
+        // Remote listings are cached on their node and, unlike the local-folder
+        // caches, nothing else clears them — so a Refresh (or a hidden-files toggle,
+        // which routes through here) would otherwise keep showing the old server
+        // contents for the rest of the session.
+        invalidateProviderListings()
         outlineView.reloadData()
         if let url { reveal(url) }
+    }
+
+    /// Drop every cached remote listing, so the next expansion re-reads it.
+    private func invalidateProviderListings() {
+        func walk(_ item: FSItem) {
+            for child in item.providerChildren ?? [] { walk(child) }
+            item.invalidateProviderChildren()
+        }
+        for node in cachedMountNodes { walk(node) }
+        for node in cachedS3ProfileNodes { walk(node) }
     }
 
     /// Re-read one folder's subtree after a file operation changed its contents
@@ -161,20 +187,38 @@ final class FolderTreeController: NSObject {
         let id = ObjectIdentifier(item)
         guard !loadingNodes.contains(id) else { return }
         loadingNodes.insert(id)
-        let url = item.url
-        let hidden = showHiddenFiles
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let loaded = (try? await Providers.provider(for: url)
-                .children(of: url, includeHidden: hidden)) ?? []
-            let folders = loaded
-                .filter { $0.isDirectory && !$0.isPackage }
-                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            item.setProviderChildren(folders)
+            let folders = await self.loadProviderChildren(of: item)
             self.loadingNodes.remove(id)
-            self.outlineView.reloadItem(item, reloadChildren: true)
             if !folders.isEmpty { self.outlineView.expandItem(item) }
         }
+    }
+
+    /// A provider node's folder children, loading them over the network (and
+    /// reloading the node) the first time. Shared by expansion and remote reveal.
+    @MainActor
+    private func loadProviderChildren(of item: FSItem) async -> [FSItem] {
+        if let loaded = item.providerChildren { return loaded }
+        let url = item.url
+        let loaded: [FSItem]
+        do {
+            loaded = try await Providers.provider(for: url).children(of: url, includeHidden: showHiddenFiles)
+        } catch {
+            // Don't record a failure as an empty folder. Caching it would leave the
+            // node permanently empty — long after a dropped connection came back —
+            // because a cached listing is never re-read.
+            return item.providerChildren ?? []
+        }
+        // Another load for this node finished first — keep its instances, so the
+        // outline view's per-node identity (and expansion state) stays stable.
+        if let raced = item.providerChildren { return raced }
+        let folders = loaded
+            .filter { $0.isDirectory && !$0.isPackage }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        item.setProviderChildren(folders)
+        outlineView.reloadItem(item, reloadChildren: true)
+        return folders
     }
 
     @objc private func appBecameActive() {
@@ -212,6 +256,11 @@ final class FolderTreeController: NSObject {
     /// wherever the user navigated (double-click in the details pane, address
     /// bar, etc.). No-op if the target isn't under one of our roots.
     func reveal(_ target: URL) {
+        revealGeneration &+= 1
+        guard target.isFileURL || target.scheme == nil else {
+            revealRemote(target, generation: revealGeneration)
+            return
+        }
         guard let root = bestRoot(for: target) else { return }
         let chain = itemChain(from: root, to: target)
         for ancestor in chain.dropLast() { outlineView.expandItem(ancestor) }
@@ -221,6 +270,40 @@ final class FolderTreeController: NSObject {
             outlineView.selectRowIndexes([row], byExtendingSelection: false)
             outlineView.scrollRowToVisible(row)
         }
+    }
+
+    /// Reveal a provider location (an S3 profile's buckets, a mount's folders…) that
+    /// hangs under /Volumes: expand each level in turn, loading its children over
+    /// the network as needed, and select the target once reached. Only an exact
+    /// match is selected — never a nearer ancestor, which would navigate away.
+    private func revealRemote(_ target: URL, generation: Int) {
+        guard let volumes = roots.first(where: { S3Mount.isVolumesRoot($0.url) }) else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.outlineView.expandItem(volumes)
+            var node = self.treeChildren(of: volumes).first { ProviderMounts.contains($0.url, target) }
+            while let current = node, generation == self.revealGeneration {
+                if ProviderMounts.sameLocation(current.url, target) {
+                    self.selectWithoutNavigating(current)
+                    return
+                }
+                let children = await self.loadProviderChildren(of: current)
+                guard generation == self.revealGeneration else { return }
+                self.outlineView.expandItem(current)
+                node = children.first {
+                    ProviderMounts.contains($0.url, target) && !ProviderMounts.sameLocation($0.url, current.url)
+                }
+            }
+        }
+    }
+
+    private func selectWithoutNavigating(_ item: FSItem) {
+        let row = outlineView.row(forItem: item)
+        guard row >= 0 else { return }
+        suppressSelectCallback = true
+        outlineView.selectRowIndexes([row], byExtendingSelection: false)
+        suppressSelectCallback = false
+        outlineView.scrollRowToVisible(row)
     }
 
     /// The deepest root (longest path) that contains `target`.
@@ -323,7 +406,21 @@ extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
         }
         let local = item.folderChildren(includeHidden: showHiddenFiles)
         guard S3Mount.isVolumesRoot(item.url) else { return local }
-        return local + s3ProfileNodes()
+        return local + s3ProfileNodes() + mountNodes()
+    }
+
+    /// Stable provider-mount nodes, rebuilt only when the mount set changes (reusing
+    /// instances by URL so an expanded mount stays expanded).
+    private func mountNodes() -> [FSItem] {
+        let mounts = Providers.mounts()
+        if cachedMountNodes.map(\.url) != mounts.map(\.url) || cachedMountNodes.map(\.name) != mounts.map(\.name) {
+            let existing = Dictionary(cachedMountNodes.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
+            cachedMountNodes = mounts.map { mount in
+                if let node = existing[mount.url], node.name == mount.name { return node }
+                return ProviderMounts.item(for: mount)
+            }
+        }
+        return cachedMountNodes
     }
 
     /// Stable S3 profile nodes, rebuilt only when the profile set changes so the
@@ -370,6 +467,11 @@ extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !suppressSelectCallback else { return }
+        // The user has chosen a node, so abandon any reveal still walking a remote
+        // hierarchy: arriving later, it would move the selection away from where they
+        // just put it, and leave the two panes showing different folders.
+        revealGeneration &+= 1
         let row = outlineView.selectedRow
         guard row >= 0, let item = outlineView.item(atRow: row) as? FSItem else { return }
         onSelect?(item.url)

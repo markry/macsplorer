@@ -437,11 +437,47 @@ extension DetailsTableController: NSTextFieldDelegate {
     }
 }
 
+// MARK: - Revealing results
+
+extension DetailsTableController {
+    func revealItems(at indexes: IndexSet) {
+        let rowCount = tableView.numberOfRows
+        guard let first = indexes.first, rowCount > 0 else { return }
+        let target = min(first, rowCount - 1)
+
+        // Focus the destination so the result draws as the full (blue) selection.
+        // Two things are needed: the view must be first responder, and its window must
+        // be key — a non-key window always draws selection in the muted style, which is
+        // what a drop between two windows leaves behind. `makeKey` rather than
+        // `makeKeyAndOrderFront`, so an overlapping window isn't raised over the one
+        // being dragged from. Deferred so the drop event finishes first; neither call
+        // activates the app, so a drag from the Finder doesn't steal its focus.
+        let view = tableView
+        DispatchQueue.main.async {
+            view.window?.makeKey()
+            view.window?.makeFirstResponder(view)
+        }
+
+        // Already on screen: don't yank the view around.
+        let visible = tableView.rows(in: tableView.visibleRect)
+        if visible.length > 0, NSLocationInRange(target, visible) { return }
+
+        // Scroll past the target first, so it settles a couple of rows inside the
+        // edge it was hidden beyond instead of flush against it.
+        let below = visible.length > 0 ? target > visible.location : true
+        let padded = below ? min(target + 2, rowCount - 1) : max(target - 2, 0)
+        tableView.scrollRowToVisible(padded)
+        tableView.scrollRowToVisible(target)
+    }
+}
+
 // MARK: - Drag & drop
 
 extension DetailsTableController {
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
         guard let item = contents.item(at: row), !item.isParentLink else { return nil }
+        // Remote files drag out as a promise; the Finder gets real bytes on drop.
+        guard item.url.isFileURL else { return RemoteFilePromiseDelegate.promiseProvider(for: item) }
         return item.url as NSURL
     }
 
@@ -481,6 +517,17 @@ extension DetailsTableController {
             let selectLanded = contents.samePath(destination, contents.folder)
             DispatchQueue.main.async { [weak self] in
                 self?.contents.performTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
+            }
+            return true
+        }
+        // A drag of our own remote items carries their provider URLs, so the drop can
+        // download them here rather than round-tripping through a file promise.
+        let providerURLs = RemoteFilePromise.providerURLs(on: info.draggingPasteboard)
+        if !providerURLs.isEmpty {
+            let selectLanded = contents.samePath(destination, contents.folder)
+            DispatchQueue.main.async { [weak self] in
+                self?.contents.performTransfer(providerURLs, into: destination, move: false,
+                                               selectLanded: selectLanded)
             }
             return true
         }

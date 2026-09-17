@@ -239,6 +239,14 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// exists yet. (The breadcrumb chips, shown when not editing, are separate.)
     private func addressString(for url: URL) -> String {
         guard !isLocal(url) else { return url.path }
+        // Other registered providers: the URL itself, unescaped for reading.
+        guard url.scheme == S3Location.scheme else {
+            // A mount's root reads as the folder it appears as under /Volumes.
+            if let mount = ProviderMounts.mount(rootedAt: url) {
+                return "\(S3Mount.volumesURL.path)/\(mount.name)"
+            }
+            return url.absoluteString.removingPercentEncoding ?? url.absoluteString
+        }
         switch S3Location.parse(url) {
         case .prefix(_, let bucket, let key): return "s3://\(bucket)/\(key)"
         case .profile(let profile):           return "\(S3Mount.volumesURL.path)/\(profile)"
@@ -250,6 +258,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// bucket), else the profile (host), else the scheme ("S3") for the root.
     private func locationTitle(for url: URL) -> String {
         if !isLocal(url) {
+            if let mount = ProviderMounts.mount(rootedAt: url) { return mount.name }
             let segments = url.pathComponents.filter { $0 != "/" }
             if let last = segments.last { return last }
             if let host = url.host, !host.isEmpty { return host }
@@ -314,9 +323,9 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// current location.
     func navigate(to url: URL) {
         showFolder(url)
-        // The left tree is local-only for now; revealing a remote (s3://) location
-        // would spuriously match the "/" root by path prefix. Skip it.
-        if isLocal(url) { treeController.reveal(url) }
+        // Local paths reveal synchronously; provider locations under /Volumes load
+        // and expand level by level in the background.
+        treeController.reveal(url)
     }
 
     /// The AWS profile of the current S3 location, if we're in one.
@@ -327,6 +336,21 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         case .prefix(let profile, _, _): return profile
         default:                         return nil
         }
+    }
+
+    /// `scheme://host/path` typed for a registered, non-local provider → its URL.
+    private func registeredProviderURL(from entered: String) -> URL? {
+        guard let separator = entered.range(of: "://") else { return nil }
+        let scheme = entered[..<separator.lowerBound].lowercased()
+        guard scheme != "file", Providers.isRegistered(scheme: scheme) else { return nil }
+        let rest = entered[separator.upperBound...]
+        let slash = rest.firstIndex(of: "/") ?? rest.endIndex
+        var components = URLComponents()
+        components.scheme = scheme
+        components.host = String(rest[..<slash])
+        let path = String(rest[slash...])
+        components.path = path.isEmpty ? "/" : (path.removingPercentEncoding ?? path)
+        return components.url
     }
 
     /// If `path` is `/Volumes/<name>` and <name> is a connected S3 profile, returns
@@ -353,11 +377,24 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
             setAddress(addressString(for: url), cursorAtEnd: true)
             return
         }
+        // Any other registered provider's scheme://host/path. Built via components so
+        // typed spaces and other unescaped characters are encoded, not rejected.
+        if let url = registeredProviderURL(from: entered) {
+            navigate(to: url)
+            setAddress(addressString(for: url), cursorAtEnd: true)
+            return
+        }
         // /Volumes/<profile> for a connected S3 profile → that profile's S3 root.
         if let profile = s3ProfileFromVolumesPath(entered) {
             let url = S3Location.url(profile: profile)
             navigate(to: url)
             setAddress(addressString(for: url), cursorAtEnd: true)
+            return
+        }
+        // /Volumes/<name> for a provider mount → the mount's root.
+        if let mount = ProviderMounts.mount(forVolumesPath: entered) {
+            navigate(to: mount.url)
+            setAddress(addressString(for: mount.url), cursorAtEnd: true)
             return
         }
         let raw = (addressField.stringValue as NSString).expandingTildeInPath

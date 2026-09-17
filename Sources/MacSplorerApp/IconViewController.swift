@@ -165,6 +165,8 @@ extension IconViewController: NSCollectionViewDataSource, NSCollectionViewDelega
     func collectionView(_ collectionView: NSCollectionView,
                         pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? {
         guard let item = contents.item(at: indexPath.item), !item.isParentLink else { return nil }
+        // Remote files drag out as a promise; the Finder gets real bytes on drop.
+        guard item.url.isFileURL else { return RemoteFilePromiseDelegate.promiseProvider(for: item) }
         return item.url as NSURL
     }
 
@@ -196,10 +198,52 @@ extension IconViewController: NSCollectionViewDataSource, NSCollectionViewDelega
             }
             return true
         }
+        // A drag of our own remote items carries their provider URLs, so the drop can
+        // download them here rather than round-tripping through a file promise.
+        let providerURLs = RemoteFilePromise.providerURLs(on: draggingInfo.draggingPasteboard)
+        if !providerURLs.isEmpty {
+            DispatchQueue.main.async { [weak self] in
+                self?.contents.performTransfer(providerURLs, into: folder, move: false, selectLanded: true)
+            }
+            return true
+        }
         let receivers = contents.promiseReceivers(from: draggingInfo)
         guard !receivers.isEmpty else { return false }
         contents.receivePromisedFiles(receivers, into: folder)
         return true
+    }
+}
+
+// MARK: - Revealing results
+
+extension IconViewController {
+    func revealItems(at indexes: IndexSet) {
+        let count = collectionView.numberOfItems(inSection: 0)
+        guard let first = indexes.first, count > 0 else { return }
+        let item = min(first, count - 1)
+        let target = IndexPath(item: item, section: 0)
+
+        // Focus the destination so the result draws as the full selection rather than
+        // the muted one a drop leaves behind: the view needs to be first responder and
+        // its window needs to be key. `makeKey` rather than `makeKeyAndOrderFront`, so
+        // the window isn't raised over the one being dragged from. Neither call
+        // activates the app, so a drag from another app doesn't steal its focus.
+        let view = collectionView
+        DispatchQueue.main.async {
+            view.window?.makeKey()
+            view.window?.makeFirstResponder(view)
+        }
+
+        let visible = collectionView.indexPathsForVisibleItems()
+        if visible.contains(target) { return }
+
+        // Scroll past the target first, so it settles inside the edge it was hidden
+        // beyond rather than flush against it.
+        let below = visible.map(\.item).min().map { item > $0 } ?? true
+        let padded = below ? min(item + 2, count - 1) : max(item - 2, 0)
+        collectionView.scrollToItems(at: [IndexPath(item: padded, section: 0)],
+                                     scrollPosition: .nearestVerticalEdge)
+        collectionView.scrollToItems(at: [target], scrollPosition: .nearestVerticalEdge)
     }
 }
 

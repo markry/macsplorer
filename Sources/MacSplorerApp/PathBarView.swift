@@ -106,13 +106,23 @@ final class PathBarView: NSView {
     /// the normal provider path rather than a bogus local path.
     private func remoteSegments(for url: URL) -> [(title: String, url: URL)] {
         var result: [(String, URL)] = [("Volumes", URL(fileURLWithPath: "/Volumes"))]
+        let mount = ProviderMounts.mount(containing: url)
+        if let mount {
+            // A provider mount: Volumes › <mount name> › path…
+            result.append((mount.name, mount.url))
+        } else if let scheme = url.scheme, scheme != "s3", let root = URL(string: "\(scheme):///") {
+            // A registered provider with no mount: the trail roots at its scheme root.
+            result = [(scheme.capitalized, root)]
+        }
         guard let host = url.host, !host.isEmpty else { return result }
+        // A mount that is itself the host (one volume per deployment) already named it.
+        let mountNamedTheHost = (mount?.url.host?.isEmpty == false)
         func rebuilt(path: String) -> URL? {
             guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
             c.host = host; c.path = path; c.query = nil; c.fragment = nil
             return c.url
         }
-        if let profile = rebuilt(path: "/") { result.append((host, profile)) }
+        if !mountNamedTheHost, let profile = rebuilt(path: "/") { result.append((host, profile)) }
         var accumulated = "/"
         for component in url.pathComponents.filter({ $0 != "/" }) {
             accumulated += component + "/"

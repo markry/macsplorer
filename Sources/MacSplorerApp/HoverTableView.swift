@@ -261,13 +261,32 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
 
 extension HoverTableView: QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        fileActions?.selectedFileURLs.count ?? 0
+        previewURLs().count
     }
 
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
-        let urls = fileActions?.selectedFileURLs ?? []
+        let urls = previewURLs()
         guard index >= 0 && index < urls.count else { return nil }
         return urls[index] as NSURL
+    }
+
+    /// Quick Look needs local files. Remote selections preview from their session
+    /// copy; anything not downloaded yet is fetched in the background and the panel
+    /// reloaded, so it appears a moment later rather than not at all.
+    private func previewURLs() -> [URL] {
+        var result: [URL] = []
+        for url in fileActions?.selectedFileURLs ?? [] {
+            if url.isFileURL {
+                result.append(url)
+            } else if let cached = RemoteFileCache.shared.cachedFile(for: url) {
+                result.append(cached)
+            } else {
+                RemoteFileCache.shared.prefetch(url) {
+                    QLPreviewPanel.shared()?.reloadData()
+                }
+            }
+        }
+        return result
     }
 
     /// Let the panel's arrow keys / Esc fall back to the table so navigation and

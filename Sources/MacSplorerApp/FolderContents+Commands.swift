@@ -217,6 +217,7 @@ extension FolderContents {
                 .map(\.offset)
             guard !rows.isEmpty else { return }
             self.presenter?.selectItems(at: IndexSet(rows))
+            self.presenter?.revealItems(at: IndexSet(rows))
             if renameFirst, let name = names.first { self.beginRenameDeferred(named: name) }
         }
     }
@@ -275,13 +276,21 @@ extension FolderContents {
     /// Copy or move `urls` into `destination`, resolving name collisions per the
     /// user's preference (silent keep-both, or a Finder-style prompt), then refresh.
     func performTransfer(_ urls: [URL], into destination: URL, move: Bool, selectLanded: Bool) {
+        // Sources from another backend can't be handed to the destination's provider —
+        // it has no way to read them. Remote → local is a download; the other
+        // directions need uploading, which isn't built yet.
+        let remoteSources = urls.filter { !($0.isFileURL || $0.scheme == nil) }
+        if !remoteSources.isEmpty {
+            downloadTransfer(remoteSources, into: destination, selectLanded: selectLanded)
+        }
+        let urls = urls.filter { $0.isFileURL || $0.scheme == nil }
+        guard !urls.isEmpty else { return }
+
         var landed: [String] = []
         var affected: Set<URL> = [destination]
         var applyToAll: CollisionChoice?
         var failure: (name: String, error: Error)?
         let ask = Preferences.shared.promptOnCollision
-        // Phase 0: the destination's provider performs the writes. A cross-provider
-        // transfer (local <-> S3) becomes a download/upload bridge in a later phase.
         let provider = Providers.provider(for: destination)
 
         for url in urls {
@@ -327,6 +336,83 @@ extension FolderContents {
         }
         finishMutation(affected: affected, selecting: selectLanded ? landed : [])
         if let failure { reportTransferFailure(failure.name, error: failure.error, moving: move) }
+    }
+
+    /// Copy files out of a remote provider into a local folder by downloading them —
+    /// the cross-provider half of a copy or a drag.
+    ///
+    /// Always a copy: removing the original would mean deleting it on the server,
+    /// which nothing here is allowed to do yet, so a "move" degrades to a copy and
+    /// leaves the remote file alone.
+    private func downloadTransfer(_ urls: [URL], into destination: URL, selectLanded: Bool) {
+        guard destination.isFileURL || destination.scheme == nil else {
+            reportUnsupportedUpload(count: urls.count, destination: destination)
+            return
+        }
+        let ask = Preferences.shared.promptOnCollision
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var landed: [String] = []
+            var applyToAll: CollisionChoice?
+            var failure: (name: String, error: Error)?
+
+            for url in urls {
+                let name = url.lastPathComponent
+                var target = destination.appendingPathComponent(name)
+                var skip = false
+
+                if FileManager.default.fileExists(atPath: target.path) {
+                    var choice: CollisionChoice = .keepBoth
+                    if ask {
+                        if let all = applyToAll {
+                            choice = all
+                        } else {
+                            let result = self.askCollision(name: name, in: destination,
+                                                           multiple: urls.count > 1)
+                            if result.applyToAll { applyToAll = result.choice }
+                            choice = result.choice
+                        }
+                    }
+                    switch choice {
+                    case .keepBoth: target = FileOperations.uniqueDestination(forName: name, in: destination)
+                    // Replace, but not yet: the provider swaps the file in only once the
+                    // download has arrived and verified, so a failure leaves what's here
+                    // untouched rather than destroying it up front.
+                    case .replace:  break
+                    case .stop:     skip = true
+                    }
+                }
+                if skip { break }
+
+                self.onStatus?("Downloading “\(name)”…")
+                do {
+                    try await Providers.provider(for: url).download(url, to: target)
+                    landed.append(target.lastPathComponent)
+                } catch {
+                    NSSound.beep()
+                    if failure == nil { failure = (name, error) }
+                }
+            }
+
+            self.emitStatus()
+            self.finishMutation(affected: [destination], selecting: selectLanded ? landed : [])
+            if let failure {
+                self.reportTransferFailure(failure.name, error: failure.error, moving: false)
+            }
+        }
+    }
+
+    /// Copying *into* a remote provider needs uploading, which isn't built yet — say
+    /// so plainly rather than letting a provider raise a confusing lower-level error.
+    private func reportUnsupportedUpload(count: Int, destination: URL) {
+        let alert = NSAlert()
+        let what = count == 1 ? "this item" : "these \(count) items"
+        alert.messageText = "Can’t copy \(what) into “\(destination.lastPathComponent)” yet."
+        alert.informativeText = "Uploading isn’t supported in this version of MacSplorer. "
+            + "Copying files out to your Mac works."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     /// Surface a copy/move failure (out of space, permissions, …) instead of just

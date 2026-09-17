@@ -33,6 +33,18 @@ public protocol FileSystemProvider {
     /// tree's disclosure triangle). Best-effort: failures resolve to `false`.
     func hasChildFolders(at directory: URL, includeHidden: Bool) async -> Bool
 
+    // MARK: Content
+
+    /// Write the bytes of `url` to `destination` (always a local file URL),
+    /// fetching over the network when the backend isn't the local disk.
+    ///
+    /// This is what makes a remote file openable, previewable and draggable to the
+    /// Finder: the UI asks for a local copy and then treats it like any other file.
+    /// Providers that can verify what they fetched (a content hash, say) should do so
+    /// here, so a truncated download fails loudly instead of opening as a damaged
+    /// file. Slow by nature — never call it on the main thread.
+    func download(_ url: URL, to destination: URL) async throws
+
     // MARK: Mutations (the FileOperations chokepoint)
 
     @discardableResult func copy(_ source: URL, into directory: URL) throws -> URL
@@ -61,6 +73,27 @@ public extension FileSystemProvider {
     @discardableResult
     func newFile(in directory: URL, named name: String) throws -> URL {
         try newFile(in: directory, named: name, contents: Data())
+    }
+
+    /// Local disk: copying is the whole job. A remote provider overrides this;
+    /// one that hasn't implemented downloading yet says so clearly.
+    func download(_ url: URL, to destination: URL) async throws {
+        guard url.isFileURL else { throw ProviderError.downloadUnsupported(url) }
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.copyItem(at: url, to: destination)
+    }
+}
+
+/// Errors raised by the provider seam itself, rather than by one backend.
+public enum ProviderError: LocalizedError {
+    /// The backend serving this URL can't produce a local copy yet.
+    case downloadUnsupported(URL)
+
+    public var errorDescription: String? {
+        switch self {
+        case .downloadUnsupported(let url):
+            return "Downloading isn’t supported for \(url.scheme ?? "this") locations yet."
+        }
     }
 }
 
@@ -99,12 +132,42 @@ public struct ProviderCapabilities {
     }
 }
 
+/// A remote namespace surfaced as a folder under /Volumes. `url` is the location
+/// the folder opens — normally its provider's scheme root (`scheme:///`).
+public struct ProviderMount: Equatable {
+    public let name: String
+    public let url: URL
+    public let typeDescription: String?
+
+    public init(name: String, url: URL, typeDescription: String? = nil) {
+        self.name = name
+        self.url = url
+        self.typeDescription = typeDescription
+    }
+}
+
 /// Resolves the provider responsible for a location. Phase 0 has only the local
 /// disk; the `s3://` case joins here on the `s3-provider` branch.
 public enum Providers {
     private static let local = LocalProvider()
     private static let lock = NSLock()
     private static var factories: [String: (URL) -> FileSystemProvider] = [:]
+    private static var mountSources: [() -> [ProviderMount]] = []
+
+    /// Register a source of mounts: remote namespaces the UI shows as folders under
+    /// /Volumes, beside mounted disks. Called at launch by a provider module; the
+    /// source is re-evaluated on every `mounts()` call, so it can reflect settings
+    /// that change while the app runs.
+    public static func registerMounts(_ source: @escaping () -> [ProviderMount]) {
+        lock.lock(); defer { lock.unlock() }
+        mountSources.append(source)
+    }
+
+    /// Every mount currently contributed by the registered sources.
+    public static func mounts() -> [ProviderMount] {
+        lock.lock(); let sources = mountSources; lock.unlock()
+        return sources.flatMap { $0() }
+    }
 
     /// Register a provider factory for a URL scheme. The S3 module calls this at
     /// app startup (`register(scheme: "s3") { S3Provider(url: $0) }`), so the
@@ -113,6 +176,13 @@ public enum Providers {
     public static func register(scheme: String, factory: @escaping (URL) -> FileSystemProvider) {
         lock.lock(); defer { lock.unlock() }
         factories[scheme] = factory
+    }
+
+    /// Whether a provider is registered for `scheme` — lets the UI accept a typed
+    /// `scheme://…` address for any registered backend without knowing about it.
+    public static func isRegistered(scheme: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return factories[scheme] != nil
     }
 
     /// The provider responsible for `url`: a registered factory for its scheme

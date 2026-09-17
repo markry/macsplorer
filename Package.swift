@@ -52,6 +52,13 @@ if hasPlugins {
     targets.append(
         .target(name: "MacSplorerPlugins", dependencies: ["MacSplorerCore", "MacSplorerS3"])
     )
+    // Their tests, when the checkout carries them too.
+    if FileManager.default.fileExists(
+        atPath: packageDir.appendingPathComponent("Tests/MacSplorerPluginsTests").path) {
+        targets.append(
+            .testTarget(name: "MacSplorerPluginsTests", dependencies: ["MacSplorerPlugins", "MacSplorerCore"])
+        )
+    }
 }
 
 let package = Package(

@@ -10,6 +10,16 @@ protocol FolderContentsPresenter: AnyObject {
     var selectedIndexes: IndexSet { get }
     /// Select exactly these indexes (after create/paste, to highlight results).
     func selectItems(at indexes: IndexSet)
+    /// Show a just-selected item: take focus, and scroll to it if it isn't on screen.
+    ///
+    /// Selecting alone leaves the result hidden when it lands outside the viewport —
+    /// after a paste or a drop, "it worked" has to be visible. Scrolling is skipped
+    /// when the item is already shown; otherwise it comes to rest a couple of items in
+    /// from whichever edge it was hidden past, rather than clinging to the boundary.
+    /// Focus matters too: a drop leaves the keyboard focus wherever the drag started,
+    /// so the result would draw as a muted unfocused selection instead of the blue one
+    /// a paste produces.
+    func revealItems(at indexes: IndexSet)
     /// Rebuild the whole view from the model's items.
     func reloadContents()
     /// Reload just one item — async size/thumbnail fill-in.
@@ -186,7 +196,8 @@ final class FolderContents: NSObject {
             // leave the spinner to the newer load, which owns it now).
             guard gen == loadGeneration else { return }
             // Surface connected S3 profiles as folders under /Volumes.
-            if S3Mount.isVolumesRoot(target) { loaded += S3Mount.profileItems() }
+            // …and any provider mounts beside them.
+            if S3Mount.isVolumesRoot(target) { loaded += S3Mount.profileItems() + ProviderMounts.items() }
             loadErrorMessage = nil
             realItems = loaded
         } catch {
@@ -218,6 +229,16 @@ final class FolderContents: NSObject {
             case .prefix:       return folder.deletingLastPathComponent()
             case .root, .none:  return nil
             }
+        }
+        // Other registered providers walk up their own URL hierarchy to the
+        // scheme root (scheme:///), which has no parent.
+        if !(folder.isFileURL || folder.scheme == nil), let scheme = folder.scheme {
+            // A mount's root lives under /Volumes.
+            if ProviderMounts.mount(rootedAt: folder) != nil { return S3Mount.volumesURL }
+            if folder.pathComponents.filter({ $0 != "/" }).isEmpty {
+                return (folder.host ?? "").isEmpty ? nil : URL(string: "\(scheme):///")
+            }
+            return folder.deletingLastPathComponent()
         }
         guard folder.standardizedFileURL.path != "/" else { return nil }
         return folder.deletingLastPathComponent()
@@ -364,10 +385,9 @@ final class FolderContents: NSObject {
         if item.isDirectory && !item.isPackage {
             onOpenFolder?(item.url)
         } else if !item.url.isFileURL {
-            // A remote (S3) object: opening it means downloading to a local temp
-            // file first — a later phase. For now, don't hand NSWorkspace a
-            // non-file URL it can't open (which pops a confusing system dialog).
-            NSSound.beep()
+            // A remote object: fetch a local copy, then open that — NSWorkspace can't
+            // do anything with the provider's own URL.
+            downloadThenOpenRemote(item)
         } else if item.isCloudPlaceholder {
             downloadThenOpen(item)
         } else {
@@ -381,6 +401,34 @@ final class FolderContents: NSObject {
     /// directory-watcher reload mid-download.
     func isDownloading(_ item: FSItem) -> Bool {
         downloadingPaths.contains(item.url.standardizedFileURL.path)
+    }
+
+    /// Download a remote provider's file to a local copy and open that. Shows the
+    /// same spinner the cloud-placeholder path uses, and guards against repeat
+    /// clicks while a download is running.
+    private func downloadThenOpenRemote(_ item: FSItem) {
+        let url = item.url
+        let key = url.absoluteString
+        guard downloadingPaths.insert(key).inserted else { return }
+        refreshRow(for: item)
+        onStatus?("Downloading “\(item.name)”…")
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.downloadingPaths.remove(key)
+                self.refreshRow(for: item)
+            }
+            do {
+                let local = try await RemoteFileCache.shared.localFile(for: url)
+                self.emitStatus()
+                NSWorkspace.shared.open(local)
+            } catch {
+                NSSound.beep()
+                let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                self.onStatus?(reason)
+            }
+        }
     }
 
     /// Open an "online only" cloud file (OneDrive/iCloud File Provider placeholder).
