@@ -25,6 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         S3Mount.applyCredentialLocations()
         S3ConflictMonitor.seed()   // record any launch-time conflicts without alerting
         Providers.register(scheme: "s3") { S3Provider(url: $0) }
+        // Both registrations have to precede makeMainMenu() below, which builds the
+        // File ▸ Connect to External Files submenu from whatever has registered.
+        S3Mount.registerLocations()
         // Optional private provider modules, present only in checkouts that carry
         // them (see Package.swift). Compiles to nothing when absent, so the same
         // source builds with or without them.
@@ -76,6 +79,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// the reorder doesn't take). `arrangeInFront` is the standard "bring all of
     /// this app's windows forward"; it leaves the key window on top.
     @objc private func windowBecameKey(_ note: Notification) {
+        // Remember the last browser window to hold focus. A settings window is key
+        // while it's open, so "the frontmost window" can't answer "which folder is
+        // the user looking at?" — this can, and it keeps up if they go back to the
+        // browser, navigate, and return.
+        if let keyWindow = note.object as? NSWindow,
+           let controller = windowControllers.first(where: { $0.window === keyWindow }) {
+            lastBrowserController = controller
+        }
         guard Preferences.shared.raiseAllWindowsTogether, !isRaisingAll,
               let keyWindow = note.object as? NSWindow,
               windowControllers.contains(where: { $0.window === keyWindow }) else { return }
@@ -89,6 +100,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
+
+    /// The last browser window to be key, which outlives another window taking focus.
+    private weak var lastBrowserController: MainWindowController?
 
     /// The controller for the frontmost window — menu commands act on it.
     private var keyController: MainWindowController? {
@@ -374,18 +388,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         fileMenu.addItem(terminal)
 
         fileMenu.addItem(.separator())
-        // Connect to S3 — a stateful toggle that surfaces AWS profiles as folders
-        // under /Volumes (title flips to "Disconnect from S3"; see validateMenuItem).
-        let connectS3 = NSMenuItem(title: "Connect to S3",
-                                   action: #selector(toggleS3Connection(_:)),
-                                   keyEquivalent: "")
-        connectS3.target = self
-        fileMenu.addItem(connectS3)
-        let credLocations = NSMenuItem(title: "S3 Credential Locations…",
-                                       action: #selector(showS3Credentials(_:)),
-                                       keyEquivalent: "")
-        credLocations.target = self
-        fileMenu.addItem(credLocations)
+        // One entry per provider that keeps credentials in folders. Built from what
+        // the providers registered, so a new backend appears here without this code
+        // knowing about it — and there's no free-floating connect/disconnect toggle
+        // that does nothing until a provider is actually configured.
+        let external = NSMenuItem(title: "Connect to External Files", action: nil, keyEquivalent: "")
+        let externalMenu = NSMenu()
+        for (index, locations) in Providers.allLocations().enumerated() {
+            let item = NSMenuItem(title: locations.menuTitle,
+                                  action: #selector(showProviderLocations(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            externalMenu.addItem(item)
+        }
+        external.submenu = externalMenu
+        fileMenu.addItem(external)
 
         fileMenu.addItem(.separator())
         // Order matches the context menus: Calculate Folder Sizes… then Get Info.
@@ -581,32 +599,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         keyController?.openInTerminal()
     }
 
-    private var s3CredentialsController: S3CredentialsWindowController?
-    @objc private func showS3Credentials(_ sender: Any?) {
-        if s3CredentialsController == nil {
-            let controller = S3CredentialsWindowController()
-            controller.onClose = { [weak self] in self?.s3CredentialsController = nil }
-            s3CredentialsController = controller
+    /// One open window per provider, keyed by its position in the registration list.
+    private var locationsControllers: [Int: FolderLocationsWindowController] = [:]
+
+    @objc private func showProviderLocations(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem else { return }
+        let all = Providers.allLocations()
+        guard all.indices.contains(item.tag) else { return }
+        let index = item.tag
+
+        if locationsControllers[index] == nil {
+            let controller = FolderLocationsWindowController(
+                locations: all[index],
+                // Not `keyController`: this window is the key one while it's open.
+                currentFolder: { [weak self] in
+                    (self?.lastBrowserController ?? self?.keyController)?.currentFolder
+                })
+            controller.onClose = { [weak self] in self?.locationsControllers[index] = nil }
+            locationsControllers[index] = controller
         }
-        s3CredentialsController?.showWindow(nil)
-        s3CredentialsController?.window?.makeKeyAndOrderFront(nil)
+        locationsControllers[index]?.showWindow(nil)
+        locationsControllers[index]?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func s3LocationsChanged() {
         credentialWatcher.watch(folders: S3Mount.locationFolders())
-    }
-
-    @objc private func toggleS3Connection(_ sender: Any?) {
-        S3Mount.isConnected.toggle()
-        // Refresh /Volumes everywhere (tree + any pane showing it) so the S3
-        // profiles appear or disappear immediately.
-        FolderChange.notify([S3Mount.volumesURL])
-        // Connecting is a deliberate action — jump the frontmost tab (both panes)
-        // to /Volumes so the newly-mounted profiles are right there.
-        if S3Mount.isConnected {
-            keyController?.navigate(to: S3Mount.volumesURL)
-        }
     }
 
     @objc private func getInfoForSelection(_ sender: Any?) {
@@ -750,8 +768,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(closeTab(_:)):
             // Only with real tabs — never close the window via "Close Tab".
             return (keyController?.tabCount ?? 0) > 1
-        case #selector(toggleS3Connection(_:)):
-            menuItem.title = S3Mount.isConnected ? "Disconnect from S3" : "Connect to S3"
         default:
             break
         }

@@ -29,10 +29,54 @@ extension FolderContents {
     func trashSelectedItems() {
         let urls = selectedURLs()
         guard !urls.isEmpty, let folder else { return }
+        // A remote store has no Trash to move things into, so the same keystroke has
+        // to ask what the user meant — see RemoteDelete.
+        if urls.contains(where: { !$0.isFileURL }) {
+            deleteRemoteItems(urls, reloading: folder)
+            return
+        }
         for url in urls {
             do { _ = try Providers.provider(for: url).moveToTrash(url) } catch { NSSound.beep() }
         }
         finishMutation(affected: [folder])
+    }
+
+    /// Confirm, then delete from a remote provider with progress and a working Stop.
+    func deleteRemoteItems(_ urls: [URL], reloading folder: URL) {
+        // Ask nothing of a backend that can't delete: offering the choice and then
+        // failing on either button is worse than saying so up front.
+        guard Providers.provider(for: urls[0]).capabilities.canWrite else {
+            reportDeleteFailure(ProviderError.deleteUnsupported(urls[0]))
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self, let choice = await RemoteDelete.confirm(urls) else { return }
+            let progress = ProviderProgress()
+            self.onBackgroundWork?(choice == .copyToTrash ? "Copying to Trash" : "Deleting", progress)
+            let work = Task { @MainActor in
+                try await RemoteDelete.perform(urls, choice: choice, progress: progress)
+            }
+            // Stop has to reach the task, not just set a flag: a provider paging
+            // through a huge listing checks the flag only between pages.
+            progress.onCancel { work.cancel() }
+            let result = await work.result
+            self.onBackgroundWorkEnded?()
+            self.finishMutation(affected: [folder])
+            if case .failure(let error) = result, !(error is CancellationError) {
+                self.reportDeleteFailure(error)
+            }
+        }
+    }
+
+    /// Say what went wrong, and that a partial delete really did delete part of it —
+    /// the one thing the user can't discover by looking at the dialog.
+    private func reportDeleteFailure(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn’t finish deleting."
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     func duplicateSelectedItems() {
@@ -47,7 +91,7 @@ extension FolderContents {
     }
 
     func renameSelectedItem() {
-        let rows = (presenter?.selectedIndexes ?? []).filter { $0 < items.count }.sorted()
+        let rows = selectedIndexes().sorted()
         guard let row = rows.first else { return }
         // Return on ".." goes up rather than renaming (Windows-style).
         if items[row].isParentLink { openItem(items[row]); return }
@@ -77,7 +121,7 @@ extension FolderContents {
     }
 
     private func singleSelectedFolderURLForTerminal() -> URL? {
-        let rows = (presenter?.selectedIndexes ?? []).filter { $0 < items.count }
+        let rows = selectedIndexes()
         guard rows.count == 1, let row = rows.first else { return nil }
         let item = items[row]
         return (item.isDirectory && !item.isPackage) ? item.url : nil
@@ -157,8 +201,36 @@ extension FolderContents {
     /// it and start renaming.
     func makeNewFolder(in directory: URL? = nil) {
         guard let target = directory ?? folder else { return }
+        // Remote creation needs the name up front — see NewRemoteFolder.
+        guard target.isFileURL else { makeRemoteFolder(in: target); return }
         showTargetThenCreate(in: target) {
             try Providers.provider(for: target).newFolder(in: target).lastPathComponent
+        }
+    }
+
+    /// Create a folder — or, at the top level of a provider that has containers of
+    /// its own, a bucket — on a remote provider.
+    private func makeRemoteFolder(in target: URL) {
+        Task { @MainActor [weak self] in
+            guard let self, let choice = await NewRemoteFolder.ask(in: target) else { return }
+            do {
+                let created: URL
+                if let profile = NewRemoteFolder.profile(of: target), let region = choice.region {
+                    created = try await S3Provider(url: target)
+                        .createBucket(profile: profile, name: choice.name, region: region)
+                } else {
+                    created = try await Providers.provider(for: target)
+                        .createFolder(in: target, named: choice.name)
+                }
+                self.finishMutation(affected: [target], selecting: [created.lastPathComponent])
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Couldn’t create “\(choice.name)”."
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
         }
     }
 
@@ -237,6 +309,7 @@ extension FolderContents {
 
     func trashFolder(_ url: URL) {
         let parent = url.deletingLastPathComponent()
+        if !url.isFileURL { deleteRemoteItems([url], reloading: parent); return }
         do {
             _ = try Providers.provider(for: url).moveToTrash(url)
             finishMutation(affected: [parent])
@@ -276,9 +349,14 @@ extension FolderContents {
     /// Copy or move `urls` into `destination`, resolving name collisions per the
     /// user's preference (silent keep-both, or a Finder-style prompt), then refresh.
     func performTransfer(_ urls: [URL], into destination: URL, move: Bool, selectLanded: Bool) {
-        // Sources from another backend can't be handed to the destination's provider —
-        // it has no way to read them. Remote → local is a download; the other
-        // directions need uploading, which isn't built yet.
+        // A provider can't read another backend's files, so transfers that cross a
+        // backend boundary are bridged here. Into a remote location: every source is
+        // uploaded, fetched first if it is itself remote.
+        guard destination.isFileURL || destination.scheme == nil else {
+            uploadTransfer(urls, into: destination, selectLanded: selectLanded)
+            return
+        }
+        // Out of a remote location into a local folder: a download.
         let remoteSources = urls.filter { !($0.isFileURL || $0.scheme == nil) }
         if !remoteSources.isEmpty {
             downloadTransfer(remoteSources, into: destination, selectLanded: selectLanded)
@@ -335,7 +413,19 @@ extension FolderContents {
             }
         }
         finishMutation(affected: affected, selecting: selectLanded ? landed : [])
+        if !selectLanded { followInto(destination, selecting: landed) }
         if let failure { reportTransferFailure(failure.name, error: failure.error, moving: move) }
+    }
+
+    /// Open the folder files were just copied into, and select them there.
+    ///
+    /// Dropping onto a folder row puts the files somewhere the user isn't looking, with
+    /// no sign anything happened — worse on a remote provider, where the "folder" is
+    /// just a shared prefix and there's nothing to reassure them it arrived.
+    private func followInto(_ destination: URL, selecting landed: [String]) {
+        guard !landed.isEmpty, !samePath(destination, folder) else { return }
+        selectAfterLoad(landed)
+        onOpenFolder?(destination)
     }
 
     /// Copy files out of a remote provider into a local folder by downloading them —
@@ -345,10 +435,6 @@ extension FolderContents {
     /// which nothing here is allowed to do yet, so a "move" degrades to a copy and
     /// leaves the remote file alone.
     private func downloadTransfer(_ urls: [URL], into destination: URL, selectLanded: Bool) {
-        guard destination.isFileURL || destination.scheme == nil else {
-            reportUnsupportedUpload(count: urls.count, destination: destination)
-            return
-        }
         let ask = Preferences.shared.promptOnCollision
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -386,6 +472,7 @@ extension FolderContents {
 
                 self.onStatus?("Downloading “\(name)”…")
                 do {
+                    if url.hasDirectoryPath { throw TransferRefusal.remoteFolder(name) }
                     try await Providers.provider(for: url).download(url, to: target)
                     landed.append(target.lastPathComponent)
                 } catch {
@@ -396,23 +483,144 @@ extension FolderContents {
 
             self.emitStatus()
             self.finishMutation(affected: [destination], selecting: selectLanded ? landed : [])
+            if !selectLanded { self.followInto(destination, selecting: landed) }
             if let failure {
                 self.reportTransferFailure(failure.name, error: failure.error, moving: false)
             }
         }
     }
 
-    /// Copying *into* a remote provider needs uploading, which isn't built yet — say
-    /// so plainly rather than letting a provider raise a confusing lower-level error.
-    private func reportUnsupportedUpload(count: Int, destination: URL) {
-        let alert = NSAlert()
-        let what = count == 1 ? "this item" : "these \(count) items"
-        alert.messageText = "Can’t copy \(what) into “\(destination.lastPathComponent)” yet."
-        alert.informativeText = "Uploading isn’t supported in this version of MacSplorer. "
-            + "Copying files out to your Mac works."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+    /// Copy files into a remote provider by uploading them — the other half of a
+    /// copy between backends. A source that is itself remote (another S3 location,
+    /// say) is downloaded to a scratch folder first, so any backend that can download
+    /// can copy into any backend that can upload.
+    ///
+    /// Always a copy: removing the original would mean deleting it at its source,
+    /// which no remote provider supports yet, so a "move" leaves the original alone.
+    /// A provider that can't accept uploads (the default) reports that plainly.
+    private func uploadTransfer(_ urls: [URL], into destination: URL, selectLanded: Bool) {
+        let ask = Preferences.shared.promptOnCollision
+        let target = Providers.provider(for: destination)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var landed: [String] = []
+            var applyToAll: CollisionChoice?
+            var failure: (name: String, error: Error)?
+            let scratch = FileManager.default.temporaryDirectory
+                .appendingPathComponent("macsplorer-transfer-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: scratch) }
+
+            for source in urls {
+                let name = source.lastPathComponent
+                do {
+                    // Something local to send: the source itself, or a download of it.
+                    var local = source
+                    if !(source.isFileURL || source.scheme == nil) {
+                        if source.hasDirectoryPath { throw TransferRefusal.remoteFolder(name) }
+                        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+                        local = scratch.appendingPathComponent(name)
+                        self.onStatus?("Downloading “\(name)”…")
+                        try await Providers.provider(for: source).download(source, to: local)
+                    }
+
+                    var isDirectory: ObjCBool = false
+                    FileManager.default.fileExists(atPath: local.path, isDirectory: &isDirectory)
+                    let isFolder = isDirectory.boolValue
+                    var placed = destination.appendingPathComponent(name, isDirectory: isFolder)
+
+                    if await target.exists(placed) {
+                        var choice: CollisionChoice = .keepBoth
+                        if ask {
+                            if let all = applyToAll {
+                                choice = all
+                            } else {
+                                let result = self.askCollision(name: name, in: destination,
+                                                               multiple: urls.count > 1)
+                                if result.applyToAll { applyToAll = result.choice }
+                                choice = result.choice
+                            }
+                        }
+                        if choice == .stop { break }
+                        if choice == .keepBoth {
+                            placed = await self.uniqueRemoteDestination(forName: name, in: destination,
+                                                                       isFolder: isFolder, provider: target)
+                        }
+                        // Replace needs nothing extra: the provider overwrites in place,
+                        // and must leave the original intact if that fails.
+                    }
+
+                    self.onStatus?("Uploading “\(name)”…")
+                    if isFolder {
+                        try await self.uploadFolder(local, to: placed, provider: target)
+                    } else {
+                        try await target.upload(local, to: placed)
+                    }
+                    landed.append(placed.lastPathComponent)
+                } catch {
+                    NSSound.beep()
+                    if failure == nil { failure = (name, error) }
+                }
+            }
+
+            self.emitStatus()
+            self.finishMutation(affected: [destination], selecting: selectLanded ? landed : [])
+            if !selectLanded { self.followInto(destination, selecting: landed) }
+            if let failure {
+                self.reportTransferFailure(failure.name, error: failure.error, moving: false)
+            }
+        }
+    }
+
+    /// Upload a local folder's files beneath `destination`, keeping its structure.
+    /// Empty folders aren't sent: an object store has no folders, only keys that share
+    /// a prefix, so a folder with nothing in it has nothing to store.
+    private func uploadFolder(_ folder: URL, to destination: URL, provider: FileSystemProvider) async throws {
+        for (file, relative) in Self.files(beneath: folder) {
+            var placed = destination
+            let parts = relative.split(separator: "/").map(String.init)
+            for (index, part) in parts.enumerated() {
+                placed.appendPathComponent(part, isDirectory: index < parts.count - 1)
+            }
+            onStatus?("Uploading “\(relative)”…")
+            try await provider.upload(file, to: placed)
+        }
+    }
+
+    /// Every regular file beneath `folder`, with its path relative to it. Symbolic links
+    /// are skipped so an upload can't follow one out of the folder. Collected up front,
+    /// because a directory enumerator can't be iterated across `await`s.
+    private static func files(beneath folder: URL) -> [(file: URL, relative: String)] {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey]
+        guard let enumerator = FileManager.default.enumerator(at: folder,
+                                                              includingPropertiesForKeys: Array(keys)) else {
+            return []
+        }
+        let root = folder.standardizedFileURL.path
+        var found: [(file: URL, relative: String)] = []
+        for case let file as URL in enumerator {
+            guard let values = try? file.resourceValues(forKeys: keys),
+                  values.isDirectory != true, values.isSymbolicLink != true else { continue }
+            let path = file.standardizedFileURL.path
+            guard path.hasPrefix(root + "/") else { continue }
+            found.append((file, String(path.dropFirst(root.count + 1))))
+        }
+        return found
+    }
+
+    /// A free name for "Keep Both" at a remote destination, in the same form a local
+    /// copy uses: "name copy", then "name copy 2", and so on.
+    private func uniqueRemoteDestination(forName name: String, in directory: URL, isFolder: Bool,
+                                         provider: FileSystemProvider) async -> URL {
+        let ext = isFolder ? "" : (name as NSString).pathExtension
+        let base = ext.isEmpty ? name : (name as NSString).deletingPathExtension
+        for counter in 1...999 {
+            let suffix = counter == 1 ? " copy" : " copy \(counter)"
+            let candidate = ext.isEmpty ? "\(base)\(suffix)" : "\(base)\(suffix).\(ext)"
+            let url = directory.appendingPathComponent(candidate, isDirectory: isFolder)
+            if !(await provider.exists(url)) { return url }
+        }
+        let fallback = UUID().uuidString + (ext.isEmpty ? "" : ".\(ext)")
+        return directory.appendingPathComponent(fallback, isDirectory: isFolder)
     }
 
     /// Surface a copy/move failure (out of space, permissions, …) instead of just
@@ -447,6 +655,18 @@ extension FolderContents {
         case .alertFirstButtonReturn: return (.keepBoth, applyToAll)
         case .alertSecondButtonReturn: return (.replace, applyToAll)
         default: return (.stop, applyToAll)
+        }
+    }
+}
+
+/// A transfer the app declines itself, before asking any provider.
+private enum TransferRefusal: LocalizedError {
+    case remoteFolder(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .remoteFolder(let name):
+            return "“\(name)” is a folder. Copying folders out of a remote location isn’t supported yet."
         }
     }
 }
@@ -709,7 +929,7 @@ extension FolderContents {
     }
 
     private func selectedFolderForFavorite() -> URL? {
-        let rows = (presenter?.selectedIndexes ?? []).filter { $0 < items.count }
+        let rows = selectedIndexes()
         guard rows.count == 1, let row = rows.first else { return nil }
         let item = items[row]
         return (item.isDirectory && !item.isPackage) ? item.url : nil

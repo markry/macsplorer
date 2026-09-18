@@ -115,9 +115,9 @@ expect:
 - **Tab between panes** — `Tab` cycles focus through the address bar → right pane
   → folder tree → Favorites (and `⇧Tab` reverses), landing on a usable selection
   each time.
-
-The one part that goes beyond what Explorer or Finder offer — and is worth
-learning — is the address bar, described next.
+Two parts go beyond what Explorer or Finder offer and are worth learning: the
+address bar, described next, and **Amazon S3 support** further down — buckets
+browsed, and written to, like folders.
 
 ## The Filesystem Address Bar (FAB)
 
@@ -163,6 +163,85 @@ navigation:
 - **Open in Terminal.** The button at the right of the FAB (or `⌥⌘T`) opens a
   Terminal window at the path currently in the field.
 
+## Amazon S3
+
+MacSplorer browses S3 as if it were a disk. An AWS profile appears as a volume
+under **Volumes**, its buckets are the folders inside, and object keys become the
+folder tree below that — so the same list, tree, drag, copy/paste and Quick Look
+you use locally work against a bucket.
+
+Nothing is stored by MacSplorer: it reads the AWS `config` and `credentials`
+files you point it at and signs in with the profile you pick. There is no
+fallback to anyone else's credentials — a profile that can't sign in fails
+rather than quietly using another identity.
+
+**Connecting.** **File ▸ Connect to External Files ▸ Amazon S3…** opens the list
+of folders MacSplorer scans for AWS files (`~/.aws` by default). Add another —
+a cloud-synced folder holding separate work and personal credentials, say — with
+**Add…**, or by dragging a folder onto the list. **Add Current Folder** takes the
+folder the browser window is showing, which saves fighting Finder's open panel
+over hidden dot-folders. Every profile with usable credentials shows up as a
+volume; profiles with no way to sign in are left out instead of appearing broken.
+
+**Browsing.** A folder in S3 is a shared key prefix, not a thing in its own
+right, so the tree is derived from the keys themselves. Listing pages through
+large prefixes as you go, and the status bar shows progress for anything slow.
+Since S3 sends no change notifications, refresh is manual (`⌘R`).
+
+**Opening and downloading.** Opening a file downloads it to a session cache and
+hands it to the app it belongs to; Quick Look (Space) does the same. Drag objects
+to the Finder or another folder, or copy/paste them out — both transfer the bytes.
+
+**Uploading.** Drag or paste files and folders into a bucket or prefix and they
+upload, keeping a folder's structure. Uploads stream from disk rather than being
+read into memory, so size is limited by the bucket, not by RAM — with one
+exception: a single file larger than **5 GB** needs multipart upload, which isn't
+implemented yet, and is refused with a clear message rather than failing part-way.
+Copying between two S3 locations works too (including across profiles and
+accounts), staged through a temporary local file.
+
+**Deleting.** S3 has no Trash, so **Move to Trash** (`⌘⌫`) asks what you mean:
+
+- **Copy to Local Trash** — download everything first, into a dated folder in
+  `~/.Trash`, then delete from the bucket. Recoverable afterwards.
+- **Full Deletion** — remove it from the server immediately. Not undoable.
+
+Before asking, MacSplorer takes a bounded look at what's there: one listing
+request, so the dialog appears immediately, reporting either an exact count and
+size ("23 objects · 1.2 MB") or "More than 1,000 objects" when there's more than
+a page. It deliberately does *not* count a large prefix in full — that can take
+minutes — and the page it just listed becomes the first batch it deletes.
+
+Long deletes show progress in the status bar with a **Stop** button. Stopping
+leaves what's already deleted deleted and the rest untouched; stopping during a
+copy-to-Trash deletes nothing at all, since the copy must finish first. On a
+versioned bucket this deletes the current version, as the AWS console's Delete
+does.
+
+**Buckets.** In a profile's volume, **New Folder** (`⌘N`) becomes **New Bucket**:
+a name and a region. The region list is the set of regions *enabled for that
+account*, read via `ec2:DescribeRegions` — which includes opt-in regions you've
+turned on and excludes those you haven't. Profiles lacking that permission (it's
+not part of S3 access) fall back to a built-in list of the always-on regions;
+either way the field is editable, so you can type any region. Bucket names are
+checked against S3's rules before the request goes out. Deleting a bucket empties
+it first and then removes the bucket itself; the confirmation says so.
+
+Inside a bucket, **New Folder** writes a zero-byte `name/` marker, the same
+convention the AWS console uses — which is also how an empty folder can exist in
+a store that has no folders.
+
+**Sharing a link.** Right-click an object ▸ **Copy Download Link…** creates a
+presigned URL: pick how long it lasts, whether the browser should display the
+file or download it, and the content type it's served as. The type defaults to
+what the file's extension implies rather than what's stored on the object, since
+objects are routinely stored as `application/octet-stream` and a video then
+silently refuses to play; **Stored type** keeps the object's own.
+
+**What isn't there yet.** Renaming (S3 has no atomic rename — it would be a copy
+plus a delete), multipart upload for files over 5 GB, and moving a folder between
+two remote locations in one step.
+
 ## Building
 
 Needs only the Xcode **Command Line Tools** (Swift + the macOS SDK) — no full
@@ -182,6 +261,10 @@ open build/MacSplorer.app # run
 - **`MacSplorerApp`** — AppKit UI (programmatic, no Storyboards): the window,
   the `NSOutlineView` folder tree, the `NSTableView` details list, and the FAB
   and status bars.
+- **`MacSplorerS3`** — the Amazon S3 backend, behind the same `FileSystemProvider`
+  seam the local filesystem uses, so the UI treats a bucket and a disk alike.
+  Remote work that can run long (listing, deleting) reports progress and can be
+  stopped.
 
 ## License
 

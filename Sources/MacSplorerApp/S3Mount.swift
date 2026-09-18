@@ -29,6 +29,29 @@ enum S3Mount {
         isConnected ? AWSProfiles.names() : []
     }
 
+    /// Describe S3's credential folders for the app's settings screen. Registered at
+    /// launch, alongside any provider module's own registration.
+    static func registerLocations() {
+        Providers.registerLocations(ProviderLocations(
+            menuTitle: "Amazon S3…",
+            windowTitle: "S3 Credential Locations",
+            explanation: "Folders MacSplorer reads AWS config / credentials files from. "
+                + "Each profile it finds becomes a volume. If a profile name appears in "
+                + "more than one folder, the first is used and the rest ignored — give "
+                + "profiles distinct, meaningful names (e.g. “admin-work” vs "
+                + "“admin-personal”), since MacSplorer can't infer meaning from a name.",
+            defaultsKey: "s3CredentialLocations",
+            suggestedFolder: AWSProfiles.defaultLocation,
+            toggleTitle: "Show S3 profiles under /Volumes",
+            isEnabled: { S3Mount.isConnected },
+            setEnabled: { S3Mount.isConnected = $0 },
+            apply: {
+                S3Mount.applyCredentialLocations()
+                FolderChange.notify([S3Mount.volumesURL])
+                S3ConflictMonitor.check()
+            }))
+    }
+
     /// Push the user's configured credential-file folders into AWSProfiles. Call at
     /// startup and whenever the locations change.
     static func applyCredentialLocations() {

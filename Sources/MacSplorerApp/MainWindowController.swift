@@ -51,6 +51,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     @objc func openInTerminal() { activePane?.openInTerminal() }
     /// Navigate the active tab (both panes: right pane + left tree reveal) to `url`.
     func navigate(to url: URL) { activePane?.navigate(to: url) }
+    /// What the active pane is browsing — for settings screens that offer to take it.
+    var currentFolder: URL? { activePane?.currentFolder }
     var canOpenInTerminal: Bool { activePane?.canOpenInTerminal ?? false }
 
     /// Re-read persisted preferences into every tab, so all stay in sync.

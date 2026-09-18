@@ -37,7 +37,11 @@ public enum S3Presign {
     /// Resolve `profile`'s credentials (locally) and classify them, so the UI can
     /// cap the offered duration and warn when a link can't outlive the session.
     public static func credentialKind(profile: String) async throws -> CredentialKind {
-        let paths = AWSProfiles.resolverPaths(forProfile: profile)
+        // Refuse a profile no configured folder defines, rather than letting the
+        // resolver fall back to credentials from outside MacSplorer's settings.
+        guard let paths = AWSProfiles.resolverPaths(forProfile: profile) else {
+            throw S3Error.noCredentials(profile: profile)
+        }
         let resolver = ProfileAWSCredentialIdentityResolver(
             profileName: profile,
             configFilePath: paths.config,

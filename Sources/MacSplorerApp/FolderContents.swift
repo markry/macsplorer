@@ -42,6 +42,19 @@ final class FolderContents: NSObject {
     /// The active view. Swapped when the user toggles list ⇄ icon.
     weak var presenter: FolderContentsPresenter?
 
+    /// The folder `items` actually belongs to. It lags `folder` while a new listing
+    /// loads — `folder` changes at once, the items only when the load finishes — and
+    /// during that gap the old rows are still on screen and still selected. Selection
+    /// commands check this, so nothing acts on a file from the folder being left.
+    private var listedFolder: URL?
+
+    /// Whether what's displayed is the listing for the current folder.
+    var isListingCurrent: Bool { listedFolder == folder }
+
+    /// Names to select once the next listing arrives — for following a drop into a
+    /// folder the user isn't looking at.
+    private var pendingSelection: [String] = []
+
     private(set) var folder: URL?
     /// What the active view renders: the real entries plus, when enabled, a
     /// leading ".." row.
@@ -64,6 +77,12 @@ final class FolderContents: NSObject {
     /// pane can show a loading spinner. Local loads complete without suspending, so
     /// they never fire `true` (no spinner flash for instant local browsing).
     var onLoadingChanged: ((Bool) -> Void)?
+    /// Work that may run long (deleting a remote prefix, copying one to the Trash):
+    /// the host shows the status bar's progress and Stop, driven by the passed
+    /// `ProviderProgress` — the same controls the folder-size scan uses.
+    var onBackgroundWork: ((String, ProviderProgress) -> Void)?
+    /// That work finished, was stopped, or failed.
+    var onBackgroundWorkEnded: (() -> Void)?
 
     /// Set by the active presenter while an inline rename is in progress, so a
     /// directory-watcher refresh doesn't yank the edit out from under it.
@@ -134,8 +153,28 @@ final class FolderContents: NSObject {
             await self.loadItems()
             self.presenter?.reloadContents()
             if !self.items.isEmpty { self.presenter?.scrollToTop() }
+            self.applyPendingSelection()
             self.emitStatus()
         }
+    }
+
+    /// Select these names when the next listing lands. Used after copying into a
+    /// folder other than the one on screen: the pane follows the files in, so the
+    /// drop is visible instead of disappearing into a folder the user can't see.
+    func selectAfterLoad(_ names: [String]) {
+        pendingSelection = names
+    }
+
+    private func applyPendingSelection() {
+        guard !pendingSelection.isEmpty else { return }
+        let wanted = Set(pendingSelection)
+        pendingSelection = []
+        let rows = items.enumerated()
+            .filter { wanted.contains($0.element.name) || wanted.contains($0.element.url.lastPathComponent) }
+            .map(\.offset)
+        guard !rows.isEmpty else { return }
+        presenter?.selectItems(at: IndexSet(rows))
+        presenter?.revealItems(at: IndexSet(rows))
     }
 
     /// Reload this pane and AWAIT completion — for callers that must act on the
@@ -200,10 +239,13 @@ final class FolderContents: NSObject {
             if S3Mount.isVolumesRoot(target) { loaded += S3Mount.profileItems() + ProviderMounts.items() }
             loadErrorMessage = nil
             realItems = loaded
+            listedFolder = target
         } catch {
             guard gen == loadGeneration else { return }
             loadErrorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             realItems = []
+            // A failed listing is still the listing for this folder: an empty one.
+            listedFolder = target
         }
         // The latest load finished (local or remote) → ensure the spinner is off.
         onLoadingChanged?(false)
@@ -302,8 +344,13 @@ final class FolderContents: NSObject {
 
     // MARK: Selection helpers
 
-    private func selectedIndexes() -> [Int] {
-        (presenter?.selectedIndexes ?? []).filter { $0 < items.count }.sorted()
+    /// The selected rows, or none while the displayed listing belongs to a folder the
+    /// user has already navigated away from. Every selection-based command goes
+    /// through here, so a slow load can't leave Trash, Rename or Copy aimed at a file
+    /// in the previous folder.
+    func selectedIndexes() -> [Int] {
+        guard isListingCurrent else { return [] }
+        return (presenter?.selectedIndexes ?? []).filter { $0 < items.count }.sorted()
     }
 
     /// Selected real entries only — the ".." row is never a file-operation target.
@@ -311,7 +358,7 @@ final class FolderContents: NSObject {
         selectedIndexes().filter { !items[$0].isParentLink }.map { items[$0].url }
     }
 
-    var hasSelection: Bool { !(presenter?.selectedIndexes.isEmpty ?? true) }
+    var hasSelection: Bool { !selectedIndexes().isEmpty }
     var canPaste: Bool { Clipboard.shared.canPaste }
     var selectedFileURLs: [URL] { selectedURLs() }
 

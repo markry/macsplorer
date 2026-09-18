@@ -93,7 +93,8 @@ final class Preferences {
     }
 
     /// Whether S3 is "connected" — i.e. AWS profiles are surfaced as folders under
-    /// /Volumes. Toggled by File ▸ Connect to S3 / Disconnect from S3; off by default.
+    /// /Volumes. Set by the checkbox in File ▸ Connect to External Files ▸ Amazon S3…, and turned
+    /// on automatically when a credential folder is added; off by default.
     var s3Connected: Bool {
         get { defaults.bool(forKey: "s3Connected") }
         set { defaults.set(newValue, forKey: "s3Connected") }

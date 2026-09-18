@@ -33,6 +33,14 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     private let scanStopButton = NSButton()
     private let scanControls = NSStackView()
     private var activeScan: FolderSizeScanner?
+    /// Long provider work (a remote delete) sharing the scan's spinner and Stop.
+    private var activeWork: ProviderProgress?
+    private var workTitle = ""
+    private var workStartDate: Date?
+    private var workRevealTimer: Timer?
+    private var workProgressTimer: Timer?
+    /// How long work must run before the progress controls appear.
+    private static let workProgressDelay: TimeInterval = 5
     private var scanProgressTimer: Timer?
     private var scanStartDate: Date?
     private let splitView = NSSplitView()
@@ -591,6 +599,10 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
             self?.handleFolderCommand(command, url: url)
         }
         contents.onOpenFolder = { [weak self] url in self?.navigate(to: url) }
+        contents.onBackgroundWork = { [weak self] title, progress in
+            self?.beginBackgroundWork(title: title, progress: progress)
+        }
+        contents.onBackgroundWorkEnded = { [weak self] in self?.endBackgroundWork() }
         contents.onStatus = { [weak self] status in
             self?.statusLabel.stringValue = status
         }
@@ -955,6 +967,61 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
     @objc private func cancelSizeScan() {
         activeScan?.cancel()   // completion fires with nil → finishScan tears down
+        activeWork?.cancel()   // the provider loop stops between items and tears down
+    }
+
+    // MARK: - Long provider work (remote delete, copy-to-Trash)
+
+    /// Show the status bar's progress and Stop for work handed to us by the model —
+    /// but only once it has actually taken a while. Most deletes finish in under a
+    /// second, and a spinner that flashes up and vanishes reads as a glitch, so the
+    /// controls appear only if the work is still running after `workProgressDelay`.
+    private func beginBackgroundWork(title: String, progress: ProviderProgress) {
+        activeWork = progress
+        workTitle = title
+        workStartDate = Date()
+        workRevealTimer = Timer.scheduledTimer(withTimeInterval: Self.workProgressDelay,
+                                               repeats: false) { [weak self] _ in
+            self?.revealWorkProgress()
+        }
+    }
+
+    private func revealWorkProgress() {
+        guard activeWork != nil else { return }
+        scanSpinner.isHidden = false
+        scanSpinner.startAnimation(nil)
+        scanStopButton.isHidden = false
+        updateWorkStatus()
+        workProgressTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.updateWorkStatus()
+        }
+    }
+
+    private func updateWorkStatus() {
+        guard let progress = activeWork else { return }
+        let state = progress.snapshot()
+        var text = progress.isCancelled ? "Stopping \(workTitle.lowercased())…" : "\(workTitle)…"
+        text += " \(state.items.formatted()) item\(state.items == 1 ? "" : "s")"
+        if state.bytes > 0 { text += " · \(FSFormat.size(state.bytes))" }
+        if let total = state.total, !state.totalIsPartial, total > 0 {
+            text += " of \(total.formatted())"
+        }
+        if !state.detail.isEmpty { text += " · \(state.detail)" }
+        statusLabel.stringValue = text
+    }
+
+    private func endBackgroundWork() {
+        workRevealTimer?.invalidate()
+        workRevealTimer = nil
+        workProgressTimer?.invalidate()
+        workProgressTimer = nil
+        activeWork = nil
+        // The size scan owns these too; leave them alone if one is running.
+        guard activeScan == nil else { return }
+        scanSpinner.stopAnimation(nil)
+        scanSpinner.isHidden = true
+        scanStopButton.isHidden = true
+        contents.emitStatus()
     }
 
     /// Get Info on the right pane's selection — or, if nothing is selected, the

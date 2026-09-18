@@ -41,6 +41,11 @@ var targets: [Target] = [
 
     .executableTarget(name: "MacSplorerApp", dependencies: appDependencies),
 
+    .testTarget(
+        name: "MacSplorerS3Tests",
+        dependencies: ["MacSplorerS3"]
+    ),
+
     // Tests for the UI-free core.
     .testTarget(
         name: "MacSplorerCoreTests",

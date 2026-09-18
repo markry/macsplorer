@@ -8,7 +8,7 @@ import MacSplorerS3
 /// forces a download, then copy the URL. When the profile uses temporary
 /// credentials (SSO / assumed role), it warns that the link can't outlive the
 /// session and caps the duration accordingly. See `S3Presign`.
-final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate {
+final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate, NSComboBoxDelegate {
     let objectURL: URL
     private let profile: String
 
@@ -18,8 +18,8 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
     private let contentTypeCombo = NSComboBox()
     private let noteLabel = NSTextField(labelWithString: "")
 
-    /// Combo sentinel meaning "don't override — serve the object's stored type".
-    private static let automaticContentType = "Automatic (keep stored type)"
+    /// Combo sentinel meaning "don't override — serve the type S3 stores for it".
+    private static let automaticContentType = "Stored type"
     private let resultView = NSTextView()
     private let resultScroll = NSScrollView()
     private let expiryLabel = NSTextField(labelWithString: "")
@@ -29,6 +29,10 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
     private var credentialKind: S3Presign.CredentialKind = .longTerm
     /// Guards against overlapping generate requests.
     private var isGenerating = false
+    /// Whether the link on screen (and on the clipboard) matches the current settings.
+    /// While it does, Copy Link has nothing new to do and stays disabled; any change to
+    /// a setting makes it stale and enables the button again.
+    private var linkIsCurrent = false
 
     var onClose: (() -> Void)?
 
@@ -62,8 +66,11 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
         durationField.stringValue = "24"
         durationField.alignment = .right
         durationField.formatter = positiveIntFormatter()
+        durationField.delegate = self
         NSLayoutConstraint.activate([durationField.widthAnchor.constraint(equalToConstant: 56)])
         unitPopUp.addItems(withTitles: ["Hours", "Days"])
+        unitPopUp.target = self
+        unitPopUp.action = #selector(settingsChanged)
 
         let modeLabel = NSTextField(labelWithString: "When opened:")
         modeControl.segmentCount = 2
@@ -71,21 +78,28 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
         modeControl.setLabel("Download file", forSegment: 1)
         modeControl.selectedSegment = 1
         modeControl.segmentStyle = .rounded
+        modeControl.target = self
+        modeControl.action = #selector(modeChanged)
         modeControl.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
         let contentTypeLabel = NSTextField(labelWithString: "Content type:")
         contentTypeCombo.usesDataSource = false
         contentTypeCombo.completes = true
         contentTypeCombo.addItems(withObjectValues: contentTypeChoices())
-        contentTypeCombo.stringValue = Self.automaticContentType
+        // Start from the extension's usual type rather than "Automatic": objects are
+        // often stored with a generic type, and then a video won't stream until the
+        // right one is sent — which is easy to miss.
+        contentTypeCombo.stringValue = guessedContentType ?? Self.automaticContentType
+        contentTypeCombo.delegate = self
         contentTypeCombo.setContentHuggingPriority(.defaultLow, for: .horizontal)
         NSLayoutConstraint.activate([contentTypeCombo.widthAnchor.constraint(equalToConstant: 260)])
 
         let modeHint = NSTextField(wrappingLabelWithString:
             "Stream lets audio/video play in place (Content-Disposition: inline); "
             + "Download forces a “Save As” with the file’s name (attachment). "
-            + "Override the content type only if the object’s stored type is wrong and "
-            + "keeps a media file from streaming; “Automatic” serves the stored type.")
+            + "The content type starts as the usual one for the file’s extension, which "
+            + "lets media stream even when it was stored with a generic type; choose "
+            + "“Stored type” to serve the type S3 holds for the object instead.")
         modeHint.font = .systemFont(ofSize: 11)
         modeHint.textColor = .secondaryLabelColor
 
@@ -165,12 +179,18 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
         var choices = [Self.automaticContentType]
         let presets = ["video/mp4", "audio/mpeg", "audio/mp4", "application/pdf",
                        "image/jpeg", "image/png", "text/plain", "application/octet-stream"]
-        if let guessed = UTType(filenameExtension: objectURL.pathExtension.lowercased())?
-            .preferredMIMEType, !guessed.isEmpty {
+        if let guessed = guessedContentType {
             choices.append(guessed)   // the likely-correct type, one click away
         }
         for preset in presets where !choices.contains(preset) { choices.append(preset) }
         return choices
+    }
+
+    /// The usual MIME type for the object's extension, if the system recognizes it.
+    private var guessedContentType: String? {
+        guard let type = UTType(filenameExtension: objectURL.pathExtension.lowercased())?
+            .preferredMIMEType, !type.isEmpty else { return nil }
+        return type
     }
 
     /// The Content-Type override to send, or nil for "Automatic" (keep stored type).
@@ -244,8 +264,8 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
         Task { @MainActor in
             defer {
                 self.isGenerating = false
-                self.copyButton.isEnabled = true
                 self.copyButton.title = "Copy Link"
+                self.updateCopyButton()
             }
             do {
                 let link = try await S3Presign.downloadURL(
@@ -254,11 +274,44 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(link.absoluteString, forType: .string)
                 self.showResult(link.absoluteString, expiry: expiryDate, capped: capped)
+                self.linkIsCurrent = true
             } catch {
+                self.linkIsCurrent = false
                 self.presentError((error as? LocalizedError)?.errorDescription
                                   ?? error.localizedDescription)
             }
         }
+    }
+
+    /// Copy Link is useful only when there's no link yet, or the settings have changed
+    /// since the one on screen was made.
+    private func updateCopyButton() {
+        copyButton.isEnabled = !isGenerating && !linkIsCurrent
+    }
+
+    /// Streaming needs the right content type to play in place, so switching to Stream
+    /// fills in the extension's usual type if the choice was left at "Automatic".
+    @objc private func modeChanged() {
+        if modeControl.selectedSegment == 0,
+           contentTypeCombo.stringValue == Self.automaticContentType,
+           let guessed = guessedContentType {
+            contentTypeCombo.stringValue = guessed
+        }
+        settingsChanged()
+    }
+
+    /// A setting that feeds into the link changed: the link shown no longer matches
+    /// them, so say so and let Copy Link make a new one.
+    @objc private func settingsChanged() {
+        guard linkIsCurrent || !resultScroll.isHidden else {
+            updateCopyButton()
+            return
+        }
+        linkIsCurrent = false
+        resultView.textColor = .tertiaryLabelColor
+        expiryLabel.stringValue = "Settings changed — Copy Link to make a new link."
+        expiryLabel.textColor = .secondaryLabelColor
+        updateCopyButton()
     }
 
     private func requestedSeconds() -> TimeInterval {
@@ -269,6 +322,7 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
 
     private func showResult(_ link: String, expiry: Date, capped: Bool) {
         resultView.string = link
+        resultView.textColor = .labelColor
         resultScroll.isHidden = false
         var text = "Copied to clipboard · expires \(Self.absolute(expiry))"
         if capped { text += " (capped to your session)" }
@@ -290,6 +344,16 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
     @objc private func closeWindow() { window?.close() }
 
     func windowWillClose(_ notification: Notification) { onClose?() }
+
+    // MARK: - Watching the settings
+
+    /// Typing in the duration or content-type fields changes the link too.
+    func controlTextDidChange(_ obj: Notification) { settingsChanged() }
+
+    /// Picking a content type from the list. The combo box still holds the previous
+    /// value at this point, but nothing here reads it — the link is regenerated from
+    /// the controls only when Copy Link is clicked, by which time it's up to date.
+    func comboBoxSelectionDidChange(_ notification: Notification) { settingsChanged() }
 
     // MARK: - Date formatting
 

@@ -18,8 +18,9 @@ public enum S3Location: Equatable {
     case root
     /// `s3://<profile>/` — lists the buckets that profile can see.
     case profile(String)
-    /// A bucket or a prefix within it. `key` is the S3 prefix to list under, with
-    /// a trailing "/" (empty string == the bucket root).
+    /// A bucket, a prefix within it, or an object. `key` ends with "/" when the URL
+    /// names a folder and not when it names an object (empty string == the bucket
+    /// root). Code that lists should normalize with `S3Provider.folderKey`.
     case prefix(profile: String, bucket: String, key: String)
 
     public static let scheme = "s3"
@@ -32,9 +33,12 @@ public enum S3Location: Equatable {
         let comps = url.pathComponents.filter { $0 != "/" }
         guard let bucket = comps.first else { return .profile(profile) }
         let keyParts = comps.dropFirst()
-        // Rebuild the prefix with a trailing "/" so ListObjectsV2(Delimiter:"/")
-        // lists the *contents* of the folder, not siblings sharing its name.
-        let key = keyParts.isEmpty ? "" : keyParts.joined(separator: "/") + "/"
+        // A folder URL (trailing slash) keeps its trailing "/"; an object URL does not.
+        // Appending the slash unconditionally turned `report.pdf` into `report.pdf/`,
+        // which every object operation rightly rejects. Listing code adds the slash
+        // where folder semantics need it (`S3Provider.folderKey`).
+        let joined = keyParts.joined(separator: "/")
+        let key = keyParts.isEmpty ? "" : (url.hasDirectoryPath ? joined + "/" : joined)
         return .prefix(profile: profile, bucket: bucket, key: key)
     }
 
@@ -88,7 +92,8 @@ public enum S3Location: Equatable {
 
 /// Enumerates the named AWS profiles to surface as the first S3 level, across one
 /// or more credential-file *locations* (folders). Pure filesystem parsing — no SDK,
-/// no network, and it never reads secret values (only the `[section]` names).
+/// no network, and it never reads secret values: only `[section]` names and the
+/// names of the settings under them.
 ///
 /// Within a location, a profile named in both `config` (`[profile X]`/`[default]`)
 /// and `credentials` (`[X]`) is one profile — the same merge AWS tools do, so that
@@ -132,11 +137,16 @@ public enum AWSProfiles {
     }
 
     /// The explicit `config` / `credentials` file paths for a profile's location, to
-    /// hand the SDK's profile resolver. Always explicit (never nil) so the SDK reads
-    /// exactly the user's configured files and never falls back to its own env/system
-    /// defaults — MacSplorer's configured folders are the single source of truth.
-    public static func resolverPaths(forProfile profile: String) -> (config: String?, credentials: String?) {
-        guard let folder = profileLocations()[profile]?.first else { return (nil, nil) }
+    /// hand the SDK's profile resolver — or nil when no configured folder defines the
+    /// profile.
+    ///
+    /// Nil must mean "refuse", never "let the SDK decide". Handing the resolver no
+    /// paths switches on its own fallbacks (`~/.aws`, the `AWS_*` environment
+    /// variables), so a profile removed from MacSplorer's settings — or a stale
+    /// favorite naming one — could still sign in with a same-named profile from some
+    /// other account. The configured folders are the only source of credentials.
+    public static func resolverPaths(forProfile profile: String) -> (config: String, credentials: String)? {
+        guard let folder = profileLocations()[profile]?.first else { return nil }
         return (folder.appendingPathComponent("config").path,
                 folder.appendingPathComponent("credentials").path)
     }
@@ -156,20 +166,42 @@ public enum AWSProfiles {
         return map
     }
 
+    /// Settings that give a profile a way to sign in. A `config` section with none of
+    /// these — just a region or an output format, as `aws configure` routinely writes
+    /// for `[default]` — has nothing to authenticate with, so listing it would only
+    /// produce a volume that can never open.
+    private static let signInKeys: Set<String> = [
+        "aws_access_key_id",        // inline keys
+        "credential_process",       // an external credential helper
+        "sso_session", "sso_start_url", "sso_account_id",   // IAM Identity Center
+        "role_arn",                 // an assumed role (with a source profile or credential source)
+        "web_identity_token_file",  // web identity federation
+        "login_session",            // `aws login`
+    ]
+
     /// Profile names in one location (union of its `config` + `credentials`).
+    ///
+    /// A `credentials` section is listed as it is — holding credentials is what that
+    /// file is for. A `config`-only profile is listed only when it has some way to
+    /// sign in (`signInKeys`); a profile whose keys live in `credentials` is already
+    /// covered by the first rule. Configured-but-expired sessions still count: they
+    /// have a sign-in method, and saying so is more useful than hiding them.
     private static func names(in folder: URL) -> Set<String> {
         let (configURL, credentialsURL) = files(in: folder)
         var set = Set<String>()
-        for header in sectionHeaders(at: configURL) {
-            if header == "default" {
-                set.insert("default")
-            } else if header.hasPrefix("profile ") {
-                let name = header.dropFirst("profile ".count).trimmingCharacters(in: .whitespaces)
-                if !name.isEmpty { set.insert(name) }
+        for section in sections(at: configURL) {
+            let name: String
+            if section.name == "default" {
+                name = "default"
+            } else if section.name.hasPrefix("profile ") {
+                name = section.name.dropFirst("profile ".count).trimmingCharacters(in: .whitespaces)
+            } else {
+                continue
             }
+            if !name.isEmpty, !section.keys.isDisjoint(with: signInKeys) { set.insert(name) }
         }
-        for header in sectionHeaders(at: credentialsURL) where !header.isEmpty {
-            set.insert(header)
+        for section in sections(at: credentialsURL) where !section.name.isEmpty {
+            set.insert(section.name)
         }
         return set
     }
@@ -184,15 +216,25 @@ public enum AWSProfiles {
          folder.appendingPathComponent("credentials"))
     }
 
-    /// The `[section]` header names in an INI file, in file order.
-    private static func sectionHeaders(at url: URL) -> [String] {
+    /// The `[section]` names in an INI file, in file order, each with the *names* of
+    /// the settings under it (lowercased).
+    ///
+    /// Setting values are never read: everything right of `=` is discarded unseen, so
+    /// secret keys in a credentials file never enter memory here.
+    private static func sections(at url: URL) -> [(name: String, keys: Set<String>)] {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-        var headers: [String] = []
+        var result: [(name: String, keys: Set<String>)] = []
         for rawLine in content.split(whereSeparator: \.isNewline) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            guard line.hasPrefix("["), line.hasSuffix("]") else { continue }
-            headers.append(String(line.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces))
+            if line.isEmpty || line.hasPrefix("#") || line.hasPrefix(";") { continue }
+            if line.hasPrefix("["), line.hasSuffix("]") {
+                let name = String(line.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+                result.append((name, []))
+            } else if let equals = line.firstIndex(of: "="), !result.isEmpty {
+                let key = line[..<equals].trimmingCharacters(in: .whitespaces).lowercased()
+                if !key.isEmpty { result[result.count - 1].keys.insert(key) }
+            }
         }
-        return headers
+        return result
     }
 }
