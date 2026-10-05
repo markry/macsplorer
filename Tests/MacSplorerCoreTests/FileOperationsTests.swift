@@ -117,3 +117,60 @@ final class FileOperationsTests {
         #expect(!FileManager.default.fileExists(atPath: source.path))
     }
 }
+
+/// Replacing one file with another, in the order that can't lose data.
+///
+/// These exist because the opposite order cost a user their files: the old file was
+/// trashed first, the replacement then failed to arrive (its source had already been
+/// moved away by an earlier paste), and what was left was a Trash entry and an empty
+/// destination.
+@Suite struct ReplaceTests {
+    private let provider = LocalProvider()
+
+    private func tempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macsplorer-replace-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    @Test func replacementArrivesAndOldContentIsGone() throws {
+        let dir = try tempDir()
+        let target = dir.appendingPathComponent("report.txt")
+        let source = dir.appendingPathComponent("incoming.txt")
+        try "old".write(to: target, atomically: true, encoding: .utf8)
+        try "new".write(to: source, atomically: true, encoding: .utf8)
+
+        let result = try provider.replace(source, at: target, moving: true)
+
+        #expect(result.lastPathComponent == "report.txt")
+        #expect(try String(contentsOf: target, encoding: .utf8) == "new")
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @Test func aMissingSourceLeavesTheTargetUntouched() throws {
+        let dir = try tempDir()
+        let target = dir.appendingPathComponent("report.txt")
+        try "keep me".write(to: target, atomically: true, encoding: .utf8)
+        let vanished = dir.appendingPathComponent("already-moved-away.txt")
+
+        #expect(throws: (any Error).self) {
+            try provider.replace(vanished, at: target, moving: true)
+        }
+        // The whole point: the file that was already there survives.
+        #expect(try String(contentsOf: target, encoding: .utf8) == "keep me")
+    }
+
+    @Test func noStagingLeftoversRemain() throws {
+        let dir = try tempDir()
+        let target = dir.appendingPathComponent("report.txt")
+        let source = dir.appendingPathComponent("incoming.txt")
+        try "old".write(to: target, atomically: true, encoding: .utf8)
+        try "new".write(to: source, atomically: true, encoding: .utf8)
+
+        _ = try provider.replace(source, at: target, moving: true)
+
+        let left = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        #expect(left == ["report.txt"])
+    }
+}

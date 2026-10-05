@@ -8,8 +8,11 @@
 # the same pipeline as meeting-notifier.
 #
 # Usage:
-#   bash scripts/build.sh            # release build
-#   bash scripts/build.sh debug      # debug build
+#   bash scripts/build.sh                 # release build: kills the running app,
+#                                         # installs to /Applications, relaunches
+#   bash scripts/build.sh debug           # debug build
+#   NO_INSTALL=1 bash scripts/build.sh    # build + sign only: leaves /Applications,
+#                                         # and any running MacSplorer, untouched
 #
 set -euo pipefail
 
@@ -33,6 +36,19 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/MacSplorer"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+
+# The version lives in ONE place: `MacSplorer.version` in MacSplorerCore. Info.plist
+# used to carry its own hard-coded copy, and the two drifted — the bundle said 0.9.0
+# while the app was 0.11.0, so macOS, Finder's Get Info and update-from-onedrive.sh
+# all reported a version that wasn't installed. Stamp the bundle from the constant.
+VERSION="$(sed -nE 's/.*public static let version = "([^"]+)".*/\1/p' Sources/MacSplorerCore/MacSplorer.swift)"
+if [ -z "$VERSION" ]; then
+    echo "ERROR: couldn't read MacSplorer.version from Sources/MacSplorerCore/MacSplorer.swift" >&2
+    exit 1
+fi
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
+echo "==> version $VERSION"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # Prefer a stable Developer ID identity so macOS TCC permissions (folder access,
@@ -54,6 +70,13 @@ else
     codesign --force --sign - "$APP"
 fi
 
+# Packaging for another machine doesn't need to replace the app running on this one.
+if [ "${NO_INSTALL:-}" = "1" ]; then
+    echo "==> NO_INSTALL=1: /Applications and any running MacSplorer left untouched."
+    echo "    Build copy: $APP"
+    exit 0
+fi
+
 # Install to /Applications so it's easy to find/launch and lives at a stable
 # path for Full Disk Access (with the Developer ID identity, that grant persists
 # across rebuilds). The build/ copy remains as the artifact for releases.
@@ -63,7 +86,11 @@ sleep 0.5
 rm -rf "/Applications/MacSplorer.app"
 ditto "$APP" "/Applications/MacSplorer.app"
 
+# Kill, reinstall, relaunch: a build ends with the new version running, so the
+# app isn't left closed after an install.
+echo "==> relaunching"
+open "/Applications/MacSplorer.app"
+
 echo "==> done."
-echo "    Installed:  /Applications/MacSplorer.app"
-echo "    Build copy: $APP"
-echo "    Launch:     open -a MacSplorer"
+echo "    Installed + relaunched: /Applications/MacSplorer.app"
+echo "    Build copy:             $APP"

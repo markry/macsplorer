@@ -33,6 +33,13 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
     /// While it does, Copy Link has nothing new to do and stays disabled; any change to
     /// a setting makes it stale and enables the button again.
     private var linkIsCurrent = false
+    /// In flight, so a change to the settings can supersede it.
+    private var generateTask: Task<Void, Never>?
+    /// Expiry wording reused when the label switches to "Copied to clipboard".
+    private var shownExpiryText = ""
+    private var shownExpiryIsCapped = false
+    /// The window grows once, when the link area first appears.
+    private var didGrowForResult = false
 
     var onClose: (() -> Void)?
 
@@ -78,6 +85,10 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
         modeControl.setLabel("Download file", forSegment: 1)
         modeControl.selectedSegment = 1
         modeControl.segmentStyle = .rounded
+        // The default bezel distinguishes the selected segment by a barely-different
+        // grey; the accent colour is what every other "this one is chosen" control
+        // uses, and is legible at a glance.
+        modeControl.selectedSegmentBezelColor = .controlAccentColor
         modeControl.target = self
         modeControl.action = #selector(modeChanged)
         modeControl.setContentHuggingPriority(.defaultHigh, for: .horizontal)
@@ -113,6 +124,17 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
         resultView.isEditable = false
         resultView.isSelectable = true
         resultView.drawsBackground = false
+        // Without this an NSTextView inside a scroll view lays out into nothing and
+        // shows an empty box however much text it is given.
+        resultView.minSize = NSSize(width: 0, height: 0)
+        resultView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                    height: CGFloat.greatestFiniteMagnitude)
+        resultView.isVerticallyResizable = true
+        resultView.isHorizontallyResizable = false
+        resultView.autoresizingMask = [.width]
+        resultView.textContainer?.widthTracksTextView = true
+        resultView.textContainer?.containerSize = NSSize(width: 0,
+                                                         height: CGFloat.greatestFiniteMagnitude)
         resultView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         resultView.textContainerInset = NSSize(width: 4, height: 4)
         resultScroll.documentView = resultView
@@ -216,6 +238,10 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
         await MainActor.run {
             self.credentialKind = kind
             self.updateNote()
+            // The duration cap depends on the credential kind, so the first link is
+            // made once that is known — the dialog then opens with a usable link
+            // rather than an empty box and an instruction to press a button.
+            self.scheduleGenerate()
         }
     }
 
@@ -241,52 +267,85 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
 
     // MARK: - Generate
 
+    /// Copy what is on screen. The link is generated as soon as the settings allow
+    /// it, so this button only ever copies — it never has to make one first, and the
+    /// text stays in the box afterwards, ready to be selected by hand if the
+    /// clipboard has since been used for something else.
     @objc private func copyLink() {
-        guard !isGenerating else { return }
+        let link = resultView.string
+        guard !link.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(link, forType: .string)
+        linkIsCurrent = true
+        expiryLabel.stringValue = "Copied to clipboard · " + shownExpiryText
+        expiryLabel.textColor = shownExpiryIsCapped ? .systemOrange : .secondaryLabelColor
+        updateCopyButton()
+    }
+
+    /// Make a link for the current settings, replacing whatever is shown.
+    ///
+    /// Presigning is local (a signature over the request, no round trip), so the box
+    /// can simply always hold a link that matches the settings, instead of asking the
+    /// user to press a button to find out what they would get.
+    private func scheduleGenerate() {
+        generateTask?.cancel()
+        linkIsCurrent = false
+        updateCopyButton()
+        generateTask = Task { @MainActor [weak self] in
+            // Settle briefly, so typing a duration doesn't sign once per keystroke.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.generateLink()
+        }
+    }
+
+    @MainActor
+    private func generateLink() async {
         let requested = requestedSeconds()
         let effective = S3Presign.effectiveExpiration(
             requested: requested, kind: credentialKind, now: Date())
         guard effective >= 1 else {
-            presentError("Your session has expired. Log in again "
-                       + "(e.g. aws sso login --profile \(profile)) and retry.")
+            showProblem("Your session has expired. Log in again "
+                      + "(e.g. aws sso login --profile \(profile)) and retry.")
             return
         }
         let disposition: S3Presign.Disposition =
             modeControl.selectedSegment == 0 ? .inline : .attachment
-        let contentType = overrideContentType()
-        let name = objectName
         isGenerating = true
-        copyButton.isEnabled = false
-        copyButton.title = "Generating…"
-        let url = objectURL
+        updateCopyButton()
         let expiryDate = Date().addingTimeInterval(effective)
         let capped = effective < requested - 0.5
-        Task { @MainActor in
-            defer {
-                self.isGenerating = false
-                self.copyButton.title = "Copy Link"
-                self.updateCopyButton()
-            }
-            do {
-                let link = try await S3Presign.downloadURL(
-                    for: url, expiration: effective, disposition: disposition,
-                    filename: name, contentType: contentType)
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(link.absoluteString, forType: .string)
-                self.showResult(link.absoluteString, expiry: expiryDate, capped: capped)
-                self.linkIsCurrent = true
-            } catch {
-                self.linkIsCurrent = false
-                self.presentError((error as? LocalizedError)?.errorDescription
-                                  ?? error.localizedDescription)
-            }
+        do {
+            let link = try await S3Presign.downloadURL(
+                for: objectURL, expiration: effective, disposition: disposition,
+                filename: objectName, contentType: overrideContentType())
+            isGenerating = false
+            guard !Task.isCancelled else { return }
+            showResult(link.absoluteString, expiry: expiryDate, capped: capped)
+        } catch {
+            isGenerating = false
+            showProblem((error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription)
         }
+        updateCopyButton()
     }
 
-    /// Copy Link is useful only when there's no link yet, or the settings have changed
-    /// since the one on screen was made.
+    /// A failure while generating belongs next to the settings that caused it, not in
+    /// a modal alert: the link is made automatically, so an alert would interrupt
+    /// someone who is still choosing.
+    private func showProblem(_ message: String) {
+        resultView.string = ""
+        resultScroll.isHidden = false
+        expiryLabel.stringValue = message
+        expiryLabel.textColor = .systemOrange
+        expiryLabel.isHidden = false
+        linkIsCurrent = false
+        updateCopyButton()
+    }
+
+    /// Copy Link is useful only while the link on screen hasn't been copied yet.
     private func updateCopyButton() {
-        copyButton.isEnabled = !isGenerating && !linkIsCurrent
+        copyButton.isEnabled = !isGenerating && !linkIsCurrent && !resultView.string.isEmpty
     }
 
     /// Streaming needs the right content type to play in place, so switching to Stream
@@ -300,18 +359,9 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
         settingsChanged()
     }
 
-    /// A setting that feeds into the link changed: the link shown no longer matches
-    /// them, so say so and let Copy Link make a new one.
+    /// A setting that feeds into the link changed: make a new one to match.
     @objc private func settingsChanged() {
-        guard linkIsCurrent || !resultScroll.isHidden else {
-            updateCopyButton()
-            return
-        }
-        linkIsCurrent = false
-        resultView.textColor = .tertiaryLabelColor
-        expiryLabel.stringValue = "Settings changed — Copy Link to make a new link."
-        expiryLabel.textColor = .secondaryLabelColor
-        updateCopyButton()
+        scheduleGenerate()
     }
 
     private func requestedSeconds() -> TimeInterval {
@@ -324,12 +374,17 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
         resultView.string = link
         resultView.textColor = .labelColor
         resultScroll.isHidden = false
-        var text = "Copied to clipboard · expires \(Self.absolute(expiry))"
-        if capped { text += " (capped to your session)" }
-        expiryLabel.stringValue = text
+        shownExpiryText = "expires \(Self.absolute(expiry))"
+        shownExpiryIsCapped = capped
+        if capped { shownExpiryText += " (capped to your session)" }
+        expiryLabel.stringValue = "Link ready · " + shownExpiryText
         expiryLabel.textColor = capped ? .systemOrange : .secondaryLabelColor
         expiryLabel.isHidden = false
-        window?.setContentSize(NSSize(width: 520, height: 420))
+        if !didGrowForResult {
+            didGrowForResult = true
+            window?.setContentSize(NSSize(width: 520, height: 420))
+        }
+        updateCopyButton()
     }
 
     private func presentError(_ message: String) {

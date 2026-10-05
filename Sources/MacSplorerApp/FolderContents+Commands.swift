@@ -8,19 +8,35 @@ import UniformTypeIdentifiers
 extension FolderContents {
     func copySelectedItems() {
         let urls = selectedURLs()
+        Diag.commands.info("copy: urls=\(urls.count) responder=\(Diag.responder(self), privacy: .public)")
         guard !urls.isEmpty else { return }
         Clipboard.shared.set(urls, operation: .copy)
     }
 
     func cutSelectedItems() {
         let urls = selectedURLs()
+        Diag.commands.info("cut: urls=\(urls.count) responder=\(Diag.responder(self), privacy: .public)")
         guard !urls.isEmpty else { return }
         Clipboard.shared.set(urls, operation: .cut)
     }
 
-    func pasteIntoFolder() {
-        guard let folder else { return }
+    /// Paste into a folder that isn't the one on screen — the right-click "Paste
+    /// into …" on a folder row, and the same entry in the tree and Favorites. The
+    /// pane follows the files in, as a drop onto a folder does, so the result is
+    /// visible rather than landing somewhere the user can't see.
+    func pasteInto(_ directory: URL) {
+        guard accepts(itemsInto: directory) else { NSSound.beep(); return }
         let (urls, move) = Clipboard.shared.pasteSource()
+        Diag.commands.info("paste into folder: urls=\(urls.count) move=\(move)")
+        guard !urls.isEmpty else { return }
+        performTransfer(urls, into: directory, move: move, selectLanded: true)
+        if move { Clipboard.shared.clearAfterMove() }
+    }
+
+    func pasteIntoFolder() {
+        guard let folder, folderAcceptsItems else { NSSound.beep(); return }
+        let (urls, move) = Clipboard.shared.pasteSource()
+        Diag.commands.info("paste: urls=\(urls.count) move=\(move) responder=\(Diag.responder(self), privacy: .public)")
         guard !urls.isEmpty else { return }
         performTransfer(urls, into: folder, move: move, selectLanded: true)
         if move { Clipboard.shared.clearAfterMove() }
@@ -83,11 +99,20 @@ extension FolderContents {
         let urls = selectedURLs()
         guard !urls.isEmpty, let folder else { return }
         var names: [String] = []
+        var affected: Set<URL> = [folder]
+        // In Recents there's no folder to put a copy into, so it goes beside the
+        // original, as Finder does. Everywhere else the original's folder IS this
+        // one, and behaviour is unchanged.
+        let besideOriginal = !folderAcceptsItems
         for url in urls {
-            do { names.append(try Providers.provider(for: folder).copy(url, into: folder).lastPathComponent) }
-            catch { NSSound.beep() }
+            let target = besideOriginal ? url.deletingLastPathComponent() : folder
+            do {
+                let copy = try Providers.provider(for: target).copy(url, into: target)
+                if samePath(target, folder) { names.append(copy.lastPathComponent) }
+                affected.insert(target)
+            } catch { NSSound.beep() }
         }
-        finishMutation(affected: [folder], selecting: names)
+        finishMutation(affected: affected, selecting: names)
     }
 
     func renameSelectedItem() {
@@ -151,7 +176,11 @@ extension FolderContents {
                 self.beginRenameDeferred(named: name, attempt: attempt + 1)
                 return
             }
-            guard let row = self.items.firstIndex(where: { $0.name == name }) else { return }
+            guard let row = self.items.firstIndex(where: { $0.name == name }) else {
+                Diag.rename.error("beginRenameDeferred: the new item is not in the listing")
+                return
+            }
+            Diag.rename.info("beginRenameDeferred: row=\(row) attempt=\(attempt)")
             self.presenter?.beginRename(at: row)
         }
     }
@@ -201,6 +230,7 @@ extension FolderContents {
     /// it and start renaming.
     func makeNewFolder(in directory: URL? = nil) {
         guard let target = directory ?? folder else { return }
+        guard accepts(itemsInto: target) else { NSSound.beep(); return }
         // Remote creation needs the name up front — see NewRemoteFolder.
         guard target.isFileURL else { makeRemoteFolder(in: target); return }
         showTargetThenCreate(in: target) {
@@ -237,6 +267,7 @@ extension FolderContents {
     /// Create an empty `untitled.<ext>` document and drop into inline rename.
     func makeNewDocument(_ type: NewDocumentType, in directory: URL? = nil) {
         guard let target = directory ?? folder else { return }
+        guard accepts(itemsInto: target) else { NSSound.beep(); return }
         showTargetThenCreate(in: target) {
             try Providers.provider(for: target).newFile(
                 in: target, named: "\(NewDocument.defaultBaseName).\(type.ext)").lastPathComponent
@@ -245,7 +276,7 @@ extension FolderContents {
 
     /// Write the clipboard URL as a cross-platform `.url` Internet Shortcut.
     func makeInternetShortcut(in directory: URL? = nil) {
-        guard let target = directory ?? folder,
+        guard let target = directory ?? folder, accepts(itemsInto: target),
               let urlString = NewDocument.clipboardURL() else { NSSound.beep(); return }
         showTargetThenCreate(in: target) {
             let data = NewDocument.internetShortcutData(for: urlString)
@@ -255,9 +286,12 @@ extension FolderContents {
     }
 
     private func showTargetThenCreate(in target: URL, _ create: () throws -> String) {
-        if !samePath(target, folder) { onOpenFolder?(target) }
+        let navigating = !samePath(target, folder)
+        Diag.rename.info("create: navigating=\(navigating)")
+        if navigating { onOpenFolder?(target) }
         do {
             let name = try create()
+            Diag.rename.info("created an item")
             finishMutation(affected: [target], selecting: [name], renameFirst: true)
         } catch {
             NSSound.beep()
@@ -287,10 +321,16 @@ extension FolderContents {
             let rows = self.items.enumerated()
                 .filter { wanted.contains($0.element.url.lastPathComponent) }
                 .map(\.offset)
+            Diag.rename.info("finishMutation: reloaded, rows=\(rows.count) renameFirst=\(renameFirst)")
             guard !rows.isEmpty else { return }
             self.presenter?.selectItems(at: IndexSet(rows))
-            self.presenter?.revealItems(at: IndexSet(rows))
-            if renameFirst, let name = names.first { self.beginRenameDeferred(named: name) }
+            // `revealItems` takes focus a turn later, which would end an edit started
+            // here; `beginRename` does its own focusing and scrolling anyway.
+            if renameFirst, let name = names.first {
+                self.beginRenameDeferred(named: name)
+            } else {
+                self.presenter?.revealItems(at: IndexSet(rows))
+            }
         }
     }
 
@@ -318,8 +358,14 @@ extension FolderContents {
 
     func renameFolder(_ url: URL) {
         let parent = url.deletingLastPathComponent()
-        if !samePath(parent, folder) { onOpenFolder?(parent) }
-        beginRenameDeferred(named: url.lastPathComponent)
+        guard !samePath(parent, folder) else {
+            beginRenameDeferred(named: url.lastPathComponent)
+            return
+        }
+        // Showing the parent is asynchronous; the row can only be edited once its
+        // listing has arrived.
+        renameAfterLoad(url.lastPathComponent)
+        onOpenFolder?(parent)
     }
 }
 
@@ -373,6 +419,13 @@ extension FolderContents {
 
         for url in urls {
             if isSelfOrDescendant(url, of: destination) { continue }
+            // A stale clipboard (a second paste after a cut+paste already moved these)
+            // points at files that no longer exist. Skip them: offering "Replace" for a
+            // source that is gone can only destroy the copy already at the destination.
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                if failure == nil { failure = (url.lastPathComponent, TransferRefusal.sourceMissing) }
+                continue
+            }
             let target = destination.appendingPathComponent(url.lastPathComponent)
             let sameParent = samePath(url.deletingLastPathComponent(), destination)
             let collides = !sameParent && FileManager.default.fileExists(atPath: target.path)
@@ -399,9 +452,8 @@ extension FolderContents {
                                     : try provider.copy(url, into: destination)
                     landed.append(dest.lastPathComponent)
                 case .replace:
-                    _ = try? provider.moveToTrash(target)
-                    let dest = move ? try provider.move(url, to: target)
-                                    : try provider.copy(url, to: target)
+                    // Safe ordering lives in the provider seam — see `replace`.
+                    let dest = try provider.replace(url, at: target, moving: move)
                     landed.append(dest.lastPathComponent)
                 case .stop:
                     break
@@ -662,11 +714,15 @@ extension FolderContents {
 /// A transfer the app declines itself, before asking any provider.
 private enum TransferRefusal: LocalizedError {
     case remoteFolder(String)
+    case sourceMissing
 
     var errorDescription: String? {
         switch self {
         case .remoteFolder(let name):
             return "“\(name)” is a folder. Copying folders out of a remote location isn’t supported yet."
+        case .sourceMissing:
+            return "The item no longer exists where it was copied from — it was probably "
+                 + "already moved. Nothing at the destination was changed."
         }
     }
 }
@@ -681,6 +737,54 @@ extension FolderContents {
     }()
 
     /// The drag types that signal promised files, for `registerForDraggedTypes`.
+    /// Everything a drop needs once its destination folder is known: plain files,
+    /// our own remote items, a right-button drag's copy/move menu, and promised
+    /// files from Outlook/Mail/Photos. Shared so the folder tree behaves exactly
+    /// like the details list rather than growing a second, subtly different copy.
+    @discardableResult
+    func acceptDrop(_ info: NSDraggingInfo, into destination: URL, in view: NSView) -> Bool {
+        guard accepts(itemsInto: destination) else { return false }
+        let urls = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        if !urls.isEmpty {
+            if RightDragSource.shared.isActive {
+                let point = view.convert(info.draggingLocation, from: nil)
+                DispatchQueue.main.async { [weak self] in
+                    self?.showRightDropMenu(urls: urls, into: destination, at: point, in: view)
+                }
+                return true
+            }
+            let move = dragOperation(for: info) == .move
+            let selectLanded = samePath(destination, folder)
+            DispatchQueue.main.async { [weak self] in
+                self?.performTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
+            }
+            return true
+        }
+        let providerURLs = RemoteFilePromise.providerURLs(on: info.draggingPasteboard)
+        if !providerURLs.isEmpty {
+            let selectLanded = samePath(destination, folder)
+            DispatchQueue.main.async { [weak self] in
+                self?.performTransfer(providerURLs, into: destination, move: false,
+                                      selectLanded: selectLanded)
+            }
+            return true
+        }
+        let receivers = promiseReceivers(from: info)
+        guard !receivers.isEmpty else { return false }
+        receivePromisedFiles(receivers, into: destination)
+        return true
+    }
+
+    /// What a drop on `destination` would do — for a view's validate step.
+    func dropOperation(for info: NSDraggingInfo, into destination: URL) -> NSDragOperation {
+        // No highlight at all over Recents: there's nowhere for the files to go.
+        guard accepts(itemsInto: destination) else { return [] }
+        let operation = dragOperation(for: info)
+        if operation != [] { return operation }
+        return promiseReceivers(from: info).isEmpty ? [] : .copy
+    }
+
     static var promiseDragTypes: [NSPasteboard.PasteboardType] {
         NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) }
     }
@@ -779,11 +883,18 @@ extension FolderContents {
         let menu = NSMenu()
         menu.autoenablesItems = false
         if index < 0 || index >= items.count {
-            if let folder {
+            if RecentsProvider.isRecents(folder) {
+                // Terminal, Reveal, Copy Path, sizes, Get Info — all act on a folder on
+                // disk, and Recents isn't one. Paste stays, greyed, so the menu still
+                // answers "can I paste here?" rather than vanishing.
+                add(menu, "Paste", #selector(ctxPaste(_:)), target, enabled: false)
+                return menu
+            }
+            if let folder, folderAcceptsItems {
                 menu.addItem(NewDocument.submenuItem(for: folder, target: target,
                                                      action: #selector(ctxNew(_:))))
             }
-            add(menu, "Paste", #selector(ctxPaste(_:)), target, enabled: Clipboard.shared.canPaste)
+            add(menu, "Paste", #selector(ctxPaste(_:)), target, enabled: canPaste)
             menu.addItem(.separator())
             add(menu, "Open in Terminal", #selector(ctxTerminal(_:)), target)
             add(menu, "Reveal in Finder", #selector(ctxReveal(_:)), target)
@@ -799,14 +910,22 @@ extension FolderContents {
         if isFolder {
             add(menu, "Open in New Window", #selector(ctxOpenInNewWindow(_:)), target)
             add(menu, "Open in Terminal", #selector(ctxTerminal(_:)), target)
-            menu.addItem(NewDocument.submenuItem(for: item.url, target: target,
-                                                 action: #selector(ctxNew(_:))))
+            if accepts(itemsInto: item.url) {
+                menu.addItem(NewDocument.submenuItem(for: item.url, target: target,
+                                                     action: #selector(ctxNew(_:))))
+            }
         } else {
             let openWith = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
             openWith.submenu = OpenWith.submenu(for: item.url, target: target,
                                                 openAction: #selector(ctxOpenWithApp(_:)),
                                                 setDefaultAction: #selector(ctxSetDefaultApp(_:)))
             menu.addItem(openWith)
+        }
+        // Recents mixes files from everywhere, so the way back to a file's own folder
+        // is a command of its own, as in Finder.
+        if RecentsProvider.isRecents(folder) {
+            menu.addItem(.separator())
+            add(menu, "Show in Enclosing Folder", #selector(ctxShowInEnclosingFolder(_:)), target)
         }
         // Presigned download link — S3 objects only (not folders/prefixes).
         if item.url.scheme == S3Location.scheme && !isFolder {
@@ -816,6 +935,16 @@ extension FolderContents {
         menu.addItem(.separator())
         add(menu, "Cut", #selector(ctxCut(_:)), target)
         add(menu, "Copy", #selector(ctxCopy(_:)), target)
+        // Paste belongs in every one of these menus, not only the empty-space one:
+        // whether a right-click lands on a row or between rows is luck, and a
+        // command that appears and disappears reads as broken. Absent vs. greyed is
+        // the difference between "this app can't" and "not right now".
+        if isFolder {
+            add(menu, "Paste into “\(item.name)”", #selector(ctxPasteInto(_:)), target,
+                enabled: accepts(itemsInto: item.url) && Clipboard.shared.canPaste)
+        } else {
+            add(menu, "Paste", #selector(ctxPaste(_:)), target, enabled: canPaste)
+        }
         add(menu, "Duplicate", #selector(ctxDuplicate(_:)), target)
         menu.addItem(.separator())
         add(menu, "Rename", #selector(ctxRename(_:)), target)
@@ -864,6 +993,21 @@ extension FolderContents {
     @objc func ctxCut(_ sender: Any?) { cutSelectedItems() }
     @objc func ctxCopy(_ sender: Any?) { copySelectedItems() }
     @objc func ctxPaste(_ sender: Any?) { pasteIntoFolder() }
+    @objc func ctxShowInEnclosingFolder(_ sender: Any?) {
+        guard let url = selectedURLs().first else { return }
+        showInEnclosingFolder(url)
+    }
+
+    /// Go to the folder a file actually lives in, with the file selected.
+    func showInEnclosingFolder(_ url: URL) {
+        selectAfterLoad([url.lastPathComponent])
+        onOpenFolder?(url.deletingLastPathComponent())
+    }
+
+    @objc func ctxPasteInto(_ sender: Any?) {
+        guard let url = selectedURLs().first else { return }
+        pasteInto(url)
+    }
     @objc func ctxDuplicate(_ sender: Any?) { duplicateSelectedItems() }
     @objc func ctxRename(_ sender: Any?) { renameSelectedItem() }
     @objc func ctxTrash(_ sender: Any?) { trashSelectedItems() }

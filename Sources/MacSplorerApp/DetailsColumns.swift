@@ -15,6 +15,9 @@ struct DetailsColumnSpec {
     /// slot a re-enabled column drops back into.
     static let all: [DetailsColumnSpec] = [
         .init(id: "name", title: "Name", defaultWidth: 300, minWidth: 120),
+        // The folder an item lives in. Redundant in an ordinary folder — every row
+        // shares it — but essential where rows come from all over, like Recents.
+        .init(id: "where", title: "Where", defaultWidth: 260, minWidth: 100),
         .init(id: "dateModified", title: "Date Modified", defaultWidth: 170, minWidth: 100),
         .init(id: "dateCreated", title: "Date Created", defaultWidth: 170, minWidth: 100),
         .init(id: "dateAdded", title: "Date Added", defaultWidth: 170, minWidth: 100),

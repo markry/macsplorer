@@ -114,8 +114,12 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
             selectRowIndexes(IndexSet(integersIn: min(anchor, row)...max(anchor, row)),
                              byExtendingSelection: false)
         } else if modifiers.contains(.command) {
+            // ⌘ toggles, as it does everywhere else in macOS: hovering a row that is
+            // already selected takes it out of the selection. Only ever inserting
+            // made it impossible to pare down a ⌘A or shift-range selection without
+            // starting over.
             var selection = selectedRowIndexes
-            selection.insert(row)
+            if selection.contains(row) { selection.remove(row) } else { selection.insert(row) }
             selectRowIndexes(selection, byExtendingSelection: false)
             selectionAnchor = row
         } else {

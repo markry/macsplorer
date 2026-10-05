@@ -49,7 +49,7 @@ final class FavoritesController: NSObject {
     /// (same handler as the tree) so the menu is fully functional.
     var onFolderCommand: ((FolderCommand, URL) -> Void)?
 
-    let view = NSView()
+    let view = FavoritesBackgroundView()
     /// Fired when the favorites count changes, so the host can re-fit the
     /// (resizable) pane height.
     var onCountChanged: ((Int) -> Void)?
@@ -98,7 +98,11 @@ final class FavoritesController: NSObject {
         tableView.target = self
         tableView.action = #selector(rowClicked)
         tableView.onContextMenu = { [weak self] row in self?.contextMenu(forRow: row) }
-        tableView.registerForDraggedTypes([.fileURL])
+        // `.URL` as well as `.fileURL`: a location that isn't on disk (Recents, an
+        // S3 node) goes on the pasteboard as `public.url`, never as a file URL, so
+        // with file URLs alone those drags were refused before the drop code below
+        // (which does accept them) was ever asked.
+        tableView.registerForDraggedTypes([.fileURL, .URL])
         tableView.reloadData()
         NotificationCenter.default.addObserver(
             self, selector: #selector(favoritesDidChange), name: Favorites.didChange, object: nil)
@@ -217,9 +221,13 @@ extension FavoritesController: NSTableViewDataSource, NSTableViewDelegate {
             ?? makeCell()
         let url = favorites[row]
         cell.textField?.stringValue = Self.favoriteLabel(url)
-        cell.imageView?.image = url.isFileURL
-            ? NSWorkspace.shared.icon(forFile: url.path)
-            : FSItem.cloudyFolderIcon   // S3 (profile/bucket/prefix) favorites
+        if url.isFileURL {
+            cell.imageView?.image = NSWorkspace.shared.icon(forFile: url.path)
+        } else if RecentsProvider.isRecents(url) {
+            cell.imageView?.image = FSItem.recentsIcon
+        } else {
+            cell.imageView?.image = FSItem.cloudyFolderIcon   // S3 (profile/bucket/prefix) favorites
+        }
         return cell
     }
 
@@ -280,11 +288,30 @@ extension FavoritesController: NSTableViewDataSource, NSTableViewDelegate {
     /// A favorite's display name. For an S3 profile URL (`s3://profile/`) the last
     /// path component is empty, so fall back to the host (the profile name).
     private static func favoriteLabel(_ url: URL) -> String {
+        // `recents:///` has no path component or host to name it by.
+        if RecentsProvider.isRecents(url) { return "Recents" }
         if !url.isFileURL, url.scheme != nil {
             let segments = url.pathComponents.filter { $0 != "/" }
             if let last = segments.last { return last }
             if let host = url.host, !host.isEmpty { return host }
         }
         return url.lastPathComponent
+    }
+}
+
+/// Draws the same surface the folder tree sits on.
+///
+/// The Favorites strip was transparent — a clear table over a scroll view with
+/// `drawsBackground` off — so whatever the window painted behind it showed
+/// through, which on current macOS is a grey window background. The tree below it
+/// draws `controlBackgroundColor`, so the left pane came out in two tones. Drawing
+/// rather than setting a layer colour keeps it correct when the appearance changes
+/// between light and dark.
+final class FavoritesBackgroundView: NSView {
+    override var isOpaque: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.controlBackgroundColor.setFill()
+        dirtyRect.fill()
     }
 }

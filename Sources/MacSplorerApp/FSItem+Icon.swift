@@ -12,11 +12,17 @@ extension FSItem {
         if url.isFileURL {
             return NSWorkspace.shared.icon(forFile: url.path)
         }
+        if RecentsProvider.isRecents(url) { return FSItem.recentsIcon }
         if isDirectory {
             return FSItem.cloudyFolderIcon
         }
         let type = UTType(filenameExtension: (name as NSString).pathExtension) ?? .data
         return NSWorkspace.shared.icon(for: type)
+    }
+
+    /// Recents' icon wherever it appears (tree, Favorites). Finder's glyph is a clock.
+    static var recentsIcon: NSImage {
+        NSImage(systemSymbolName: "clock", accessibilityDescription: "Recents") ?? cloudyFolderIcon
     }
 
     /// A distinct folder icon for the S3 (cloud) namespace. macOS folder icons are

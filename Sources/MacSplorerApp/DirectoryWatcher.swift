@@ -13,6 +13,10 @@ final class DirectoryWatcher {
     /// Start watching `url` (replacing any previous watch).
     func watch(_ url: URL) {
         stop()
+        // Only folders on disk can be watched. A provider URL's `path` isn't a disk
+        // path at all — `recents:///` has the path "/", so without this Recents would
+        // have watched the root of the startup disk.
+        guard url.isFileURL || url.scheme == nil else { return }
         let descriptor = open(url.path, O_EVTONLY)
         guard descriptor >= 0 else { return }
 

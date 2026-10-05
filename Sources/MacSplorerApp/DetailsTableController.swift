@@ -55,7 +55,22 @@ final class DetailsTableController: NSObject, FolderContentsPresenter {
         tableView.selectRowIndexes(indexes, byExtendingSelection: false)
     }
 
-    func reloadContents() { tableView.reloadData() }
+    func reloadContents() {
+        if contents.isRenaming {
+            Diag.rename.error("reloadContents DURING rename — the edit is about to be dropped")
+        }
+        syncSortIndicator()
+        tableView.reloadData()
+    }
+
+    /// Keep the header's arrow on the model's sort. Recents changes the sort by
+    /// itself (newest first on the way in, the old sort back on the way out), and
+    /// the arrow would otherwise go on pointing at a column the list isn't sorted by.
+    private func syncSortIndicator() {
+        let shown = tableView.sortDescriptors.first
+        guard shown?.key != contents.sortKey || shown?.ascending != contents.sortAscending else { return }
+        tableView.sortDescriptors = [NSSortDescriptor(key: contents.sortKey, ascending: contents.sortAscending)]
+    }
 
     func reloadItem(at index: Int) {
         guard index < tableView.numberOfRows, tableView.numberOfColumns > 0 else { return }
@@ -81,9 +96,9 @@ final class DetailsTableController: NSObject, FolderContentsPresenter {
     /// and preserving the active sort where possible.
     func rebuildColumns() {
         persistColumnGeometry()
-        let priorSort = tableView.sortDescriptors.first
         for column in tableView.tableColumns { tableView.removeTableColumn(column) }
 
+        // Every folder, Recents included, shows the user's chosen columns.
         let widths = Preferences.shared.detailsColumnWidths
         for id in Preferences.shared.detailsColumns {
             guard let spec = DetailsColumnSpec.spec(id: id) else { continue }
@@ -96,13 +111,11 @@ final class DetailsTableController: NSObject, FolderContentsPresenter {
         }
         tableView.headerView?.menu = headerMenu
 
-        if let priorSort,
-           tableView.tableColumns.contains(where: { $0.identifier.rawValue == priorSort.key }) {
-            tableView.sortDescriptors = [priorSort]
-        } else {
-            tableView.sortDescriptors = [NSSortDescriptor(key: contents.sortKey,
-                                                          ascending: contents.sortAscending)]
-        }
+        // The model's sort always wins, even when its column is hidden: Recents sorts
+        // newest-first by Date Last Opened whether or not that column is shown, and
+        // reinstating the header's previous sort would quietly undo that.
+        tableView.sortDescriptors = [NSSortDescriptor(key: contents.sortKey,
+                                                      ascending: contents.sortAscending)]
         tableView.reloadData()
     }
 
@@ -170,10 +183,17 @@ final class DetailsTableController: NSObject, FolderContentsPresenter {
         case "dateCreated":    return FSFormat.date(item.creationDate)
         case "dateAdded":      return FSFormat.date(item.addedToDirectoryDate)
         case "dateLastOpened": return FSFormat.date(item.lastOpenedDate)
+        case "where":          return Self.whereText(for: item)
         case "type":           return item.typeDescription ?? (item.isDirectory ? "Folder" : "")
         case "size":           return item.needsPackageSize ? "" : FSFormat.size(item.displayByteSize)
         default:               return ""
         }
+    }
+
+    /// The containing folder, shortened with ~ the way the address bar shows paths.
+    static func whereText(for item: FSItem) -> String {
+        guard item.url.isFileURL else { return "" }
+        return (item.url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
     }
 
     // MARK: Cells
@@ -301,6 +321,9 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
             cell.textField?.stringValue = FSFormat.date(item.creationDate)
         case "dateAdded":
             cell.textField?.stringValue = FSFormat.date(item.addedToDirectoryDate)
+        case "where":
+            cell.textField?.stringValue = Self.whereText(for: item)
+            cell.textField?.lineBreakMode = .byTruncatingHead   // keep the nearest folders visible
         case "dateLastOpened":
             cell.textField?.stringValue = FSFormat.date(item.lastOpenedDate)
         case "type":
@@ -315,6 +338,10 @@ extension DetailsTableController: NSTableViewDataSource, NSTableViewDelegate {
         default:
             cell.textField?.stringValue = ""
         }
+        // A cut item is drawn faded until it is pasted, the way Explorer and Finder
+        // do it. Without it, ⌘X changed nothing on screen and read as a no-op.
+        let faded = Clipboard.shared.isCut(item.url)
+        cell.alphaValue = faded ? 0.5 : 1
         return cell
     }
 
@@ -391,7 +418,9 @@ extension DetailsTableController: NSTextFieldDelegate {
         if field.currentEditor() == nil {
             tableView.window?.makeFirstResponder(field)
         }
+        Diag.rename.info("beginRename: editor=\(field.currentEditor() != nil) row=\(row)")
         guard let editor = field.currentEditor() else {
+            Diag.rename.error("beginRename: no field editor — edit did not start")
             renamingRow = -1
             contents.isRenaming = false
             field.isEditable = false
@@ -422,6 +451,8 @@ extension DetailsTableController: NSTextFieldDelegate {
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
+        let movementCode = (obj.userInfo?["NSTextMovement"] as? Int) ?? 0
+        Diag.rename.info("endEditing: row=\(self.renamingRow) movement=\(movementCode)")
         guard renamingRow >= 0 else { return }
         let row = renamingRow
         renamingRow = -1
@@ -453,7 +484,11 @@ extension DetailsTableController {
         // being dragged from. Deferred so the drop event finishes first; neither call
         // activates the app, so a drag from the Finder doesn't steal its focus.
         let view = tableView
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            // Not if an inline rename has started in the meantime: this runs a turn
+            // later, and taking first responder here pulls it off the field editor,
+            // ending the edit before the user can type a character.
+            guard self?.contents.isRenaming != true else { return }
             view.window?.makeKey()
             view.window?.makeFirstResponder(view)
         }
@@ -493,49 +528,13 @@ extension DetailsTableController {
         if contents.samePath(destination, contents.folder) {
             tableView.setDropRow(-1, dropOperation: .on)
         }
-        let operation = contents.dragOperation(for: info)
-        if operation != [] { return operation }
-        // Promised files (Outlook/Mail/Photos/…) are always copied in.
-        return contents.promiseReceivers(from: info).isEmpty ? [] : .copy
+        return contents.dropOperation(for: info, into: destination)
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int,
                    dropOperation: NSTableView.DropOperation) -> Bool {
         guard let destination = dropDestination(forRow: row, operation: dropOperation) else { return false }
-        let urls = info.draggingPasteboard.readObjects(
-            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        if !urls.isEmpty {
-            // A right-button drag asks the user copy vs move on drop.
-            if RightDragSource.shared.isActive {
-                let point = tableView.convert(info.draggingLocation, from: nil)
-                DispatchQueue.main.async { [weak self] in
-                    self?.contents.showRightDropMenu(urls: urls, into: destination, at: point, in: tableView)
-                }
-                return true
-            }
-            let move = contents.dragOperation(for: info) == .move
-            let selectLanded = contents.samePath(destination, contents.folder)
-            DispatchQueue.main.async { [weak self] in
-                self?.contents.performTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
-            }
-            return true
-        }
-        // A drag of our own remote items carries their provider URLs, so the drop can
-        // download them here rather than round-tripping through a file promise.
-        let providerURLs = RemoteFilePromise.providerURLs(on: info.draggingPasteboard)
-        if !providerURLs.isEmpty {
-            let selectLanded = contents.samePath(destination, contents.folder)
-            DispatchQueue.main.async { [weak self] in
-                self?.contents.performTransfer(providerURLs, into: destination, move: false,
-                                               selectLanded: selectLanded)
-            }
-            return true
-        }
-        // No file URLs — accept promised files (Outlook, Mail, Photos, …).
-        let receivers = contents.promiseReceivers(from: info)
-        guard !receivers.isEmpty else { return false }
-        contents.receivePromisedFiles(receivers, into: destination)
-        return true
+        return contents.acceptDrop(info, into: destination, in: tableView)
     }
 
     private func dropDestination(forRow row: Int, operation: NSTableView.DropOperation) -> URL? {

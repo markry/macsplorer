@@ -59,6 +59,10 @@ public protocol FileSystemProvider {
     /// when the answer fits inside the limit and `isPartial` when it doesn't.
     func peekCount(at url: URL, limit: Int) async throws -> ProviderCount
 
+    /// Put `source` where `target` is, replacing it. Must not destroy `target`
+    /// unless the replacement is safely in place.
+    @discardableResult func replace(_ source: URL, at target: URL, moving: Bool) throws -> URL
+
     /// Create a folder, asynchronously — the remote counterpart of `newFolder`.
     ///
     /// A backend that has to go over the network can't answer from the sync mutation
@@ -125,6 +129,32 @@ public extension FileSystemProvider {
     func peekCount(at url: URL, limit: Int) async throws -> ProviderCount {
         guard url.isFileURL else { return ProviderCount(items: 1) }
         return localPeekCount(at: url, limit: limit)
+    }
+
+    /// Replace in the only order that can't lose data: bring the replacement in
+    /// under a temporary name, and only once it has arrived discard what was there.
+    ///
+    /// The obvious order — trash the old file, then move the new one in — loses the
+    /// old file whenever the second step fails, and it does fail: a stale clipboard
+    /// points at a source that has already been moved away, so the replacement never
+    /// arrives and the user is left with nothing but a Trash entry. Ordering is the
+    /// whole fix; no amount of error reporting afterwards brings the file back.
+    @discardableResult
+    func replace(_ source: URL, at target: URL, moving: Bool) throws -> URL {
+        let directory = target.deletingLastPathComponent()
+        let staging = directory.appendingPathComponent(".macsplorer-incoming-\(UUID().uuidString)")
+        let arrived = moving ? try move(source, to: staging) : try copy(source, to: staging)
+        do {
+            _ = try? moveToTrash(target)
+            return try move(arrived, to: target)
+        } catch {
+            // The replacement is on disk under a hidden staging name. Give it a
+            // visible one rather than stranding it, then report the failure.
+            let rescued = FileOperations.uniqueDestination(forName: target.lastPathComponent,
+                                                           in: directory)
+            _ = try? move(arrived, to: rescued)
+            throw error
+        }
     }
 
     /// Creating locally needs no network, so the async seam just calls the sync one.

@@ -4,7 +4,7 @@ import MacSplorerCore
 /// A file-operation the tree's folder context menu delegates to the details pane
 /// (which owns the implementations), so both panes' menus are identical.
 enum FolderCommand {
-    case cut, copy, duplicate, rename, trash
+    case cut, copy, pasteInto, duplicate, rename, trash
     case newFolder
     case newDocument(NewDocumentType)
     case internetShortcut
@@ -42,13 +42,24 @@ final class FolderTreeController: NSObject {
     /// appears under "/" (the tree skips hidden items) yet is where mounted volumes
     /// live and a common navigation target; as a root, volume paths reveal right.
     private static func makeRoots() -> [FSItem] {
-        var roots = [FSItem(url: FileManager.default.homeDirectoryForCurrentUser)]
+        var roots = [recentsNode, FSItem(url: FileManager.default.homeDirectoryForCurrentUser)]
         if Preferences.shared.showStartupDiskRoot {
             roots.append(FSItem(url: URL(fileURLWithPath: "/")))
         }
         roots.append(FSItem(url: URL(fileURLWithPath: "/Volumes")))
         return roots
     }
+
+    /// Recents sits first, as in Finder's sidebar. One node for the life of the app,
+    /// so the outline view keeps its identity across root rebuilds. Its children are
+    /// set to none up front: Recents holds files, never folders, so it must not show a
+    /// disclosure triangle or try to load sub-folders when clicked.
+    private static let recentsNode: FSItem = {
+        let node = FSItem(providerURL: RecentsProvider.url, name: "Recents", isDirectory: true,
+                          byteSize: nil, modificationDate: nil, typeDescription: "Recents")
+        node.setProviderChildren([])
+        return node
+    }()
 
     /// Rebuild the roots if the startup-disk preference changed, then re-reveal
     /// `url`. Cheap no-op when the root set is unchanged (keeps expansion state).
@@ -64,6 +75,13 @@ final class FolderTreeController: NSObject {
 
     /// Called when the user selects a folder in the tree.
     var onSelect: ((URL) -> Void)?
+
+    /// A drop landed on a folder in the tree. The pane routes it to the shared
+    /// transfer logic, so dropping here does exactly what dropping on a folder row
+    /// in the details list does.
+    var onDrop: ((NSDraggingInfo, URL) -> Bool)?
+    /// What such a drop would do (copy/move/nothing) — for the validate step.
+    var onValidateDrop: ((NSDraggingInfo, URL) -> NSDragOperation)?
 
     /// Routes a folder file-operation chosen in the tree's context menu to the
     /// details pane, which owns the implementations — so the left and right
@@ -137,6 +155,10 @@ final class FolderTreeController: NSObject {
         super.init()
         outlineView.dataSource = self
         outlineView.delegate = self
+        // The tree is a drop destination too: dragging a file onto a folder here is
+        // the most natural way to file something away, and without this the folder
+        // never highlights and the drop is simply refused.
+        outlineView.registerForDraggedTypes([.fileURL] + FolderContents.promiseDragTypes)
         outlineView.onContextMenu = { [weak self] row in self?.contextMenu(forRow: row) }
         outlineView.reloadData()
         NotificationCenter.default.addObserver(
@@ -167,6 +189,23 @@ final class FolderTreeController: NSObject {
     deinit {
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    // MARK: - Drop destination
+
+    /// Only ever drop ONTO a folder, never between rows: the tree has no ordering
+    /// of its own, so an insertion point would promise something it can't do.
+    func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo,
+                     proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
+        guard let target = item as? FSItem, target.isDirectory else { return [] }
+        outlineView.setDropItem(target, dropChildIndex: NSOutlineViewDropOnItemIndex)
+        return onValidateDrop?(info, target.url) ?? []
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo,
+                     item: Any?, childIndex index: Int) -> Bool {
+        guard let target = item as? FSItem, target.isDirectory else { return false }
+        return onDrop?(info, target.url) ?? false
     }
 
     @objc private func folderDidChange(_ note: Notification) {
@@ -257,6 +296,10 @@ final class FolderTreeController: NSObject {
     /// bar, etc.). No-op if the target isn't under one of our roots.
     func reveal(_ target: URL) {
         revealGeneration &+= 1
+        if RecentsProvider.isRecents(target) {
+            selectWithoutNavigating(Self.recentsNode)
+            return
+        }
         guard target.isFileURL || target.scheme == nil else {
             revealRemote(target, generation: revealGeneration)
             return
@@ -475,6 +518,13 @@ extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
         let row = outlineView.selectedRow
         guard row >= 0, let item = outlineView.item(atRow: row) as? FSItem else { return }
         onSelect?(item.url)
+    }
+
+    /// The folder selected in the tree, for commands that act on it.
+    var selectedFolder: URL? {
+        let row = outlineView.selectedRow
+        guard row >= 0, let item = outlineView.item(atRow: row) as? FSItem else { return nil }
+        return item.url
     }
 
     /// Let folders be dragged out of the tree (so you can drag one onto the

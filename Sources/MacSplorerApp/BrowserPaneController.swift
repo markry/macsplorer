@@ -90,6 +90,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         switch command {
         case .cut: contents.cutFolder(url)
         case .copy: contents.copyFolder(url)
+        case .pasteInto: contents.pasteInto(url)
         case .duplicate: contents.duplicateFolder(url)
         case .trash: contents.trashFolder(url)
         case .rename: contents.renameFolder(url)
@@ -247,6 +248,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// exists yet. (The breadcrumb chips, shown when not editing, are separate.)
     private func addressString(for url: URL) -> String {
         guard !isLocal(url) else { return url.path }
+        if RecentsProvider.isRecents(url) { return "Recents" }
         // Other registered providers: the URL itself, unescaped for reading.
         guard url.scheme == S3Location.scheme else {
             // A mount's root reads as the folder it appears as under /Volumes.
@@ -265,6 +267,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// The window/tab title for `url` — the last meaningful segment (prefix or
     /// bucket), else the profile (host), else the scheme ("S3") for the root.
     private func locationTitle(for url: URL) -> String {
+        if RecentsProvider.isRecents(url) { return "Recents" }
         if !isLocal(url) {
             if let mount = ProviderMounts.mount(rootedAt: url) { return mount.name }
             let segments = url.pathComponents.filter { $0 != "/" }
@@ -374,6 +377,13 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
     @objc private func addressEntered() {
         let entered = addressField.stringValue.trimmingCharacters(in: .whitespaces)
+        // Recents shows its name in the address bar, so Return on it — or typing the
+        // word — has to lead back there rather than fail as a path.
+        if entered.caseInsensitiveCompare("Recents") == .orderedSame {
+            navigate(to: RecentsProvider.url)
+            setAddress(addressString(for: RecentsProvider.url), cursorAtEnd: true)
+            return
+        }
         // A real S3 URI (s3://bucket/key): reattach the active profile → the internal
         // s3://profile/bucket/key. Needs an S3 context to know which profile.
         if entered.lowercased().hasPrefix("s3://") {
@@ -586,6 +596,18 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         // re-reveal, which would loop). Double-click in details: navigate +
         // reveal so the tree follows.
         treeController.onSelect = { [weak self] url in self?.showFolder(url) }
+        outlineView.selectedFolderURL = { [weak self] in self?.treeController.selectedFolder }
+        outlineView.onCut = { [weak self] url in self?.contents.cutFolder(url) }
+        outlineView.onCopy = { [weak self] url in self?.contents.copyFolder(url) }
+        outlineView.onPaste = { [weak self] url in self?.contents.pasteInto(url) }
+        outlineView.canPaste = { Clipboard.shared.canPaste }
+        treeController.onValidateDrop = { [weak self] info, url in
+            self?.contents.dropOperation(for: info, into: url) ?? []
+        }
+        treeController.onDrop = { [weak self] info, url in
+            guard let self else { return false }
+            return self.contents.acceptDrop(info, into: url, in: self.outlineView)
+        }
         // Clicking a Favorite (in the pinned pane above) jumps there: show it AND
         // expand/reveal it in the tree below.
         favoritesController.onSelect = { [weak self] url in self?.navigate(to: url) }

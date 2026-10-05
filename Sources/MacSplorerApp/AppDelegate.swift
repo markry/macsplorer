@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         S3Mount.applyCredentialLocations()
         S3ConflictMonitor.seed()   // record any launch-time conflicts without alerting
         Providers.register(scheme: "s3") { S3Provider(url: $0) }
+        Providers.register(scheme: RecentsProvider.scheme) { RecentsProvider(url: $0) }
         // Both registrations have to precede makeMainMenu() below, which builds the
         // File ▸ Connect to External Files submenu from whatever has registered.
         S3Mount.registerLocations()

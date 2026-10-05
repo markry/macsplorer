@@ -1,0 +1,11 @@
+# Private-only paths: these must NEVER reach the public markry/macsplorer repo.
+# Enforced by the shared PII hook (~/OneDrive/Claude/config/hooks/pii-review.sh):
+# any `git push` to a PUBLIC remote is denied if a commit being pushed touches one
+# of these prefixes, or if the `private-main` branch is pushed.
+# The only route to public is scripts/publish-to-public.sh, which copies
+# everything EXCEPT these (keep its EXCLUDES list in step with this file).
+Sources/MacSplorerPlugins/
+Tests/MacSplorerPluginsTests/
+PrivateDocs/
+scripts/publish-to-public.sh
+scripts/package-private.sh

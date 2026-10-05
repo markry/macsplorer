@@ -54,6 +54,8 @@ final class FolderContents: NSObject {
     /// Names to select once the next listing arrives — for following a drop into a
     /// folder the user isn't looking at.
     private var pendingSelection: [String] = []
+    /// A name to start renaming once the listing that contains it arrives.
+    private var pendingRename: String?
 
     private(set) var folder: URL?
     /// What the active view renders: the real entries plus, when enabled, a
@@ -126,16 +128,28 @@ final class FolderContents: NSObject {
     // changes it via its column headers; the grid follows along.
     private(set) var sortKey = "name"
     private(set) var sortAscending = true
+    /// The sort in force before entering Recents, restored on leaving it.
+    private var sortOutsideRecents: (key: String, ascending: Bool)?
 
     override init() {
         super.init()
         NotificationCenter.default.addObserver(
             self, selector: #selector(folderDidChange(_:)),
             name: FolderChange.didChange, object: nil)
+        // Cut items draw faded, so the views have to redraw when the clipboard
+        // changes — including when another window does the cutting.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(clipboardDidChange),
+            name: Clipboard.didChange, object: nil)
         watcher.onChange = { [weak self] in self?.reload() }
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func clipboardDidChange() {
+        guard !isRenaming else { return }   // a rebuild would end an in-progress edit
+        presenter?.reloadContents()
+    }
 
     func item(at index: Int) -> FSItem? { items.indices.contains(index) ? items[index] : nil }
 
@@ -146,11 +160,25 @@ final class FolderContents: NSObject {
     // MARK: Loading
 
     func show(folder url: URL) {
+        let wasRecents = RecentsProvider.isRecents(folder)
+        let isRecents = RecentsProvider.isRecents(url)
+        if isRecents && !wasRecents {
+            // Recents is only useful newest-first. The user can still re-sort while
+            // they're here; whatever sort they had elsewhere comes back when they leave.
+            sortOutsideRecents = (sortKey, sortAscending)
+            sortKey = "dateLastOpened"
+            sortAscending = false
+            RecentsMonitor.shared.start()
+        } else if wasRecents && !isRecents, let saved = sortOutsideRecents {
+            sortKey = saved.key
+            sortAscending = saved.ascending
+            sortOutsideRecents = nil
+        }
         folder = url
         watcher.watch(url)
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.loadItems()
+            guard await self.loadItems() else { return }
             self.presenter?.reloadContents()
             if !self.items.isEmpty { self.presenter?.scrollToTop() }
             self.applyPendingSelection()
@@ -165,7 +193,24 @@ final class FolderContents: NSObject {
         pendingSelection = names
     }
 
+    /// Begin an inline rename of `name` once the next listing lands.
+    ///
+    /// Renaming a folder chosen in the tree means showing its parent first, and that
+    /// listing is loaded asynchronously — so looking for the row straight afterwards
+    /// found nothing and the rename was silently dropped, leaving the pane sitting on
+    /// the parent folder having apparently done nothing.
+    func renameAfterLoad(_ name: String) {
+        pendingRename = name
+    }
+
     private func applyPendingSelection() {
+        if let name = pendingRename {
+            pendingRename = nil
+            if items.contains(where: { $0.name == name }) {
+                beginRenameDeferred(named: name)
+                return   // the rename selects the row itself
+            }
+        }
         guard !pendingSelection.isEmpty else { return }
         let wanted = Set(pendingSelection)
         pendingSelection = []
@@ -184,7 +229,7 @@ final class FolderContents: NSObject {
     @MainActor
     func reloadAndWait() async {
         guard folder != nil else { return }
-        await loadItems()
+        guard await loadItems() else { return }
         presenter?.reloadContents()
         emitStatus()
     }
@@ -200,7 +245,7 @@ final class FolderContents: NSObject {
             .map { items[$0].url.standardizedFileURL.path })
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.loadItems()
+            guard await self.loadItems() else { return }
             self.presenter?.reloadContents()
             if !selectedPaths.isEmpty {
                 let rows = self.items.enumerated()
@@ -215,9 +260,16 @@ final class FolderContents: NSObject {
     /// (Re)read the folder, sort the real entries, and compose the displayed list
     /// (prepending ".." when enabled and not at a volume root). Async: a remote
     /// provider (S3) suspends here; local completes without suspending.
+    ///
+    /// Returns false when a newer load started while this one was awaiting, so the
+    /// caller can skip its own follow-up work. Dropping the stale *data* isn't
+    /// enough: a superseded load that still rebuilt the table and scrolled to the
+    /// top would land after the newer one had selected a just-created item and
+    /// started its inline rename — cancelling the edit.
     @MainActor
-    private func loadItems() async {
-        guard let folder else { realItems = []; items = []; return }
+    @discardableResult
+    private func loadItems() async -> Bool {
+        guard let folder else { realItems = []; items = []; return true }
         loadGeneration &+= 1
         let gen = loadGeneration
         let target = folder
@@ -233,7 +285,7 @@ final class FolderContents: NSObject {
             var loaded = try await Providers.provider(for: target).children(of: target, includeHidden: hidden)
             // A newer load started while we awaited — drop these stale results (and
             // leave the spinner to the newer load, which owns it now).
-            guard gen == loadGeneration else { return }
+            guard gen == loadGeneration else { return false }
             // Surface connected S3 profiles as folders under /Volumes.
             // …and any provider mounts beside them.
             if S3Mount.isVolumesRoot(target) { loaded += S3Mount.profileItems() + ProviderMounts.items() }
@@ -241,7 +293,7 @@ final class FolderContents: NSObject {
             realItems = loaded
             listedFolder = target
         } catch {
-            guard gen == loadGeneration else { return }
+            guard gen == loadGeneration else { return false }
             loadErrorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             realItems = []
             // A failed listing is still the listing for this folder: an empty one.
@@ -251,6 +303,7 @@ final class FolderContents: NSObject {
         onLoadingChanged?(false)
         sortRealItems()
         composeItems()
+        return true
     }
 
     private func composeItems() {
@@ -288,8 +341,15 @@ final class FolderContents: NSObject {
 
     @objc private func folderDidChange(_ note: Notification) {
         guard let folder else { return }
-        let path = folder.standardizedFileURL.path
-        guard FolderChange.folders(from: note).contains(where: { $0.path == path }) else { return }
+        let changed = FolderChange.folders(from: note)
+        if RecentsProvider.isRecents(folder) {
+            // Matched by scheme: `recents:///` has the path "/", so matching by path
+            // would reload Recents whenever the startup disk changed, and vice versa.
+            guard changed.contains(where: { RecentsProvider.isRecents($0) }) else { return }
+        } else {
+            let path = folder.standardizedFileURL.path
+            guard changed.contains(where: { !RecentsProvider.isRecents($0) && $0.path == path }) else { return }
+        }
         // A create/mutation this pane initiated reloads (awaited) + renames itself;
         // skip the duplicate reload its own broadcast would cause here.
         if skipsNextSelfChangeReload {
@@ -326,6 +386,8 @@ final class FolderContents: NSObject {
         case "dateCreated":    return compareOptional(a.creationDate, b.creationDate)
         case "dateAdded":      return compareOptional(a.addedToDirectoryDate, b.addedToDirectoryDate)
         case "dateLastOpened": return compareOptional(a.lastOpenedDate, b.lastOpenedDate)
+        case "where":          return a.url.deletingLastPathComponent().path
+                                      .localizedStandardCompare(b.url.deletingLastPathComponent().path)
         case "size":           return compareOptional(a.displayByteSize, b.displayByteSize)
         case "type":           return (a.typeDescription ?? "")
                                       .localizedStandardCompare(b.typeDescription ?? "")
@@ -359,7 +421,17 @@ final class FolderContents: NSObject {
     }
 
     var hasSelection: Bool { !selectedIndexes().isEmpty }
-    var canPaste: Bool { Clipboard.shared.canPaste }
+    /// Whether items can be put into `url`. False for Recents, which shows files where
+    /// they already live and has no folder behind it, and for read-only providers.
+    func accepts(itemsInto url: URL?) -> Bool {
+        guard let url else { return false }
+        return Providers.provider(for: url).capabilities.canWrite
+    }
+
+    /// Whether the folder on screen can take new items (paste, drop, New Folder…).
+    var folderAcceptsItems: Bool { accepts(itemsInto: folder) }
+
+    var canPaste: Bool { folderAcceptsItems && Clipboard.shared.canPaste }
     var selectedFileURLs: [URL] { selectedURLs() }
 
     private func singleSelectedFolderURL() -> URL? {

@@ -22,8 +22,9 @@ public final class FSItem {
     /// When this item was added to its containing folder (`.addedToDirectoryDateKey`),
     /// matching Finder's "Date Added" — an optional details column.
     public let addedToDirectoryDate: Date?
-    /// Last access date (`.contentAccessDateKey`) — an optional "Date Last Opened"
-    /// column. Approximate: the OS updates it on access, not only deliberate opens.
+    /// When the file was last opened through Launch Services — Finder, the Dock, an
+    /// app's Open, or MacSplorer itself. The same date Finder shows as "Last Opened"
+    /// and Recents is built from. nil for anything never opened that way.
     public let lastOpenedDate: Date?
     /// File size in bytes; nil for directories (shown blank, like Explorer).
     public let byteSize: Int?
@@ -43,7 +44,7 @@ public final class FSItem {
     private static let resourceKeys: [URLResourceKey] = [
         .isDirectoryKey, .isPackageKey, .isSymbolicLinkKey,
         .contentModificationDateKey, .creationDateKey,
-        .addedToDirectoryDateKey, .contentAccessDateKey,
+        .addedToDirectoryDateKey,
         .fileSizeKey, .totalFileAllocatedSizeKey,
         .localizedTypeDescriptionKey, .localizedNameKey,
         .ubiquitousItemDownloadingStatusKey,
@@ -79,6 +80,25 @@ public final class FSItem {
     public func knownPackageSize() -> Int? { cachedPackageSize }
     public func setPackageSize(_ value: Int) { cachedPackageSize = value }
 
+    /// The last-opened date macOS records on the file itself, in the
+    /// `com.apple.lastuseddate#PS` extended attribute: a `timespec`, 8 bytes of
+    /// seconds then 8 of nanoseconds. Launch Services writes it on every open and
+    /// Spotlight copies it into `kMDItemLastUsedDate`. Reading it is one syscall,
+    /// as cheap as the other metadata here, so it costs nothing to show everywhere.
+    public static func lastUsedDate(of url: URL) -> Date? {
+        guard url.isFileURL else { return nil }
+        var spec = timespec()
+        let size = MemoryLayout<timespec>.size
+        let read = url.withUnsafeFileSystemRepresentation { path -> Int in
+            guard let path else { return -1 }
+            return withUnsafeMutableBytes(of: &spec) { buffer in
+                getxattr(path, "com.apple.lastuseddate#PS", buffer.baseAddress, size, 0, 0)
+            }
+        }
+        guard read == size, spec.tv_sec > 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(spec.tv_sec) + TimeInterval(spec.tv_nsec) / 1e9)
+    }
+
     public init(url: URL) {
         self.url = url
         let values = try? url.resourceValues(forKeys: Set(FSItem.resourceKeys))
@@ -109,7 +129,10 @@ public final class FSItem {
         self.modificationDate = values?.contentModificationDate
         self.creationDate = values?.creationDate
         self.addedToDirectoryDate = values?.addedToDirectoryDate
-        self.lastOpenedDate = values?.contentAccessDate
+        // Not `.contentAccessDateKey`: that is the file's access time, which moves
+        // whenever anything reads the file — a backup, a sync client, Spotlight —
+        // so the column showed when the file was last *touched*, not opened.
+        self.lastOpenedDate = FSItem.lastUsedDate(of: url)
         self.byteSize = directory ? nil : (values?.fileSize ?? values?.totalFileAllocatedSize)
         self.typeDescription = values?.localizedTypeDescription
         self.isParentLink = false

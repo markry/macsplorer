@@ -47,6 +47,11 @@ final class IconViewController: NSObject, FolderContentsPresenter {
         collectionView.onTrash = { [weak self] in self?.contents.trashSelectedItems() }
         collectionView.onRename = { [weak self] in self?.contents.renameSelectedItem() }
         collectionView.selectedURLs = { [weak self] in self?.contents.selectedFileURLs ?? [] }
+        collectionView.onCut = { [weak self] in self?.contents.cutSelectedItems() }
+        collectionView.onCopy = { [weak self] in self?.contents.copySelectedItems() }
+        collectionView.onPaste = { [weak self] in self?.contents.pasteIntoFolder() }
+        collectionView.onDuplicate = { [weak self] in self?.contents.duplicateSelectedItems() }
+        collectionView.canPaste = { Clipboard.shared.canPaste }
 
         scrollView.documentView = collectionView
         scrollView.hasVerticalScroller = true
@@ -147,6 +152,8 @@ extension IconViewController: NSCollectionViewDataSource, NSCollectionViewDelega
         let item = collectionView.makeItem(withIdentifier: IconItem.identifier, for: indexPath) as! IconItem
         if let fsItem = contents.item(at: indexPath.item) {
             item.configure(with: fsItem, edge: edge, downloading: contents.isDownloading(fsItem))
+            // Faded while it waits to be moved by a paste — see the list view.
+            item.view.alphaValue = Clipboard.shared.isCut(fsItem.url) ? 0.5 : 1
         }
         return item
     }
@@ -229,7 +236,11 @@ extension IconViewController {
         // the window isn't raised over the one being dragged from. Neither call
         // activates the app, so a drag from another app doesn't steal its focus.
         let view = collectionView
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            // Not if an inline rename has started in the meantime: this runs a turn
+            // later, and taking first responder here pulls it off the field editor,
+            // ending the edit before the user can type a character.
+            guard self?.contents.isRenaming != true else { return }
             view.window?.makeKey()
             view.window?.makeFirstResponder(view)
         }
@@ -279,7 +290,7 @@ extension IconViewController: NSTextFieldDelegate {
 /// An `NSCollectionView` that adds double-click-to-open, single-click-open mode,
 /// a right-click context menu, Return/Delete/Space keys, and Quick Look — the
 /// grid equivalent of `HoverTableView`.
-final class IconCollectionView: NSCollectionView {
+final class IconCollectionView: NSCollectionView, NSMenuItemValidation {
     var onOpenItem: ((Int) -> Void)?
     var singleClickOpens: (() -> Bool)?
     var onContextMenu: ((Int) -> NSMenu?)?
@@ -287,6 +298,29 @@ final class IconCollectionView: NSCollectionView {
     var onRename: (() -> Void)?
     var onTab: ((Bool) -> Void)?
     var selectedURLs: (() -> [URL])?
+    /// The standard editing commands. The grid implemented none of them, so every
+    /// one of ⌘X/⌘C/⌘V/⌘D was dead while it had focus.
+    var onCut: (() -> Void)?
+    var onCopy: (() -> Void)?
+    var onPaste: (() -> Void)?
+    var onDuplicate: (() -> Void)?
+    var canPaste: (() -> Bool)?
+
+    @objc func cut(_ sender: Any?) { onCut?() }
+    @objc func copy(_ sender: Any?) { onCopy?() }
+    @objc func paste(_ sender: Any?) { onPaste?() }
+    @objc func duplicate(_ sender: Any?) { onDuplicate?() }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(cut(_:)), #selector(copy(_:)), #selector(duplicate(_:)):
+            return !(selectedURLs?().isEmpty ?? true)
+        case #selector(paste(_:)):
+            return canPaste?() == true
+        default:
+            return true
+        }
+    }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)

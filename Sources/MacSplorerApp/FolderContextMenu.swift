@@ -6,7 +6,7 @@ import MacSplorerCore
 final class FolderMenuAction: NSObject {
     enum Kind {
         case open, openInNewWindow, openInTerminal
-        case cut, copy, duplicate, rename, trash
+        case cut, copy, pasteInto, duplicate, rename, trash
         case reveal, copyPath, addFavorite, removeFavorite
         case eject, getInfo, calculateSizes
     }
@@ -34,11 +34,30 @@ enum FolderContextMenu {
         }
         add("Open", .open)
         add("Open in New Window", .openInNewWindow)
+        // Recents is a view, not a folder on disk: it can't be renamed, trashed,
+        // copied, opened in Terminal or pasted into, so it offers only ways to open it.
+        if RecentsProvider.isRecents(url) {
+            menu.addItem(.separator())
+            if Favorites.shared.contains(url) {
+                add("Remove from Favorites", .removeFavorite)
+            } else {
+                add("Add to Favorites", .addFavorite)
+            }
+            return menu
+        }
         add("Open in Terminal", .openInTerminal)
         menu.addItem(NewDocument.submenuItem(for: url, target: target, action: newAction))
         menu.addItem(.separator())
         add("Cut", .cut)
         add("Copy", .copy)
+        // Greyed when there's nothing to paste, rather than missing — see the
+        // details pane's menu for why.
+        let paste = NSMenuItem(title: "Paste into “\((url as NSURL).lastPathComponent ?? url.lastPathComponent)”",
+                               action: action, keyEquivalent: "")
+        paste.target = target
+        paste.representedObject = FolderMenuAction(.pasteInto, url)
+        paste.isEnabled = Clipboard.shared.canPaste
+        menu.addItem(paste)
         add("Duplicate", .duplicate)
         menu.addItem(.separator())
         add("Rename", .rename)
@@ -96,6 +115,7 @@ enum FolderContextMenu {
         case .openInTerminal: Shell.openInTerminal(url)
         case .cut: command(.cut, url)
         case .copy: command(.copy, url)
+        case .pasteInto: command(.pasteInto, url)
         case .duplicate: command(.duplicate, url)
         case .rename: command(.rename, url)
         case .trash: command(.trash, url)
