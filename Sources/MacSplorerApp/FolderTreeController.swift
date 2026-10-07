@@ -32,6 +32,10 @@ final class FolderTreeController: NSObject {
     /// Bumped by every reveal, so an in-flight remote reveal (which awaits network
     /// listings level by level) abandons itself once the user has moved on.
     private var revealGeneration = 0
+    /// Set when a click changed the selection (which already navigated), so the
+    /// click action that follows doesn't navigate a second time.
+    private var selectionChangedByClick = false
+
 
     /// Set while the tree selects a row itself (a remote reveal), so that selection
     /// isn't reported back as a user navigation.
@@ -155,6 +159,11 @@ final class FolderTreeController: NSObject {
         super.init()
         outlineView.dataSource = self
         outlineView.delegate = self
+        // Re-clicking the already-selected folder must still navigate — e.g. after a
+        // drop moved the right pane into a new subfolder the tree couldn't select
+        // yet, clicking the (still highlighted) parent did nothing at all.
+        outlineView.target = self
+        outlineView.action = #selector(rowClicked)
         // The tree is a drop destination too: dragging a file onto a folder here is
         // the most natural way to file something away, and without this the folder
         // never highlights and the drop is simply refused.
@@ -509,8 +518,20 @@ extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
         return cell
     }
 
+    /// A click on a row — fires even when the row was already selected, so
+    /// re-clicking a folder always re-navigates (as Favorites does).
+    @objc private func rowClicked() {
+        defer { selectionChangedByClick = false }
+        guard !selectionChangedByClick else { return }
+        let row = outlineView.clickedRow
+        guard row >= 0, row == outlineView.selectedRow,
+              let item = outlineView.item(atRow: row) as? FSItem else { return }
+        onSelect?(item.url)
+    }
+
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !suppressSelectCallback else { return }
+        selectionChangedByClick = NSApp.currentEvent?.type == .leftMouseDown
         // The user has chosen a node, so abandon any reveal still walking a remote
         // hierarchy: arriving later, it would move the selection away from where they
         // just put it, and leave the two panes showing different folders.

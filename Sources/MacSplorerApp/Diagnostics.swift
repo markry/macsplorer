@@ -17,6 +17,18 @@ enum Diag {
     /// are enough to see the flow, and the system log is not the place for a user's
     /// filenames.
     static let commands = Logger(subsystem: "net.ryland.macsplorer", category: "commands")
+
+    /// Drops, transfers and remote folder creation: which route a transfer took
+    /// (server-side copy or download-and-upload), whether it was a move, and how it
+    /// ended. Profile/bucket *matches* are logged as booleans, never names or keys.
+    static let transfer = Logger(subsystem: "net.ryland.macsplorer", category: "transfer")
+
+    /// An error's type and code — enough to tell a denied write from a bad name
+    /// without putting the message (which may name a file) in the system log.
+    static func describe(_ error: Error) -> String {
+        let ns = error as NSError
+        return "\(type(of: error)) \(ns.domain)#\(ns.code)"
+    }
 }
 
 extension Diag {

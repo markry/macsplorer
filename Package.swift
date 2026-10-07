@@ -36,6 +36,8 @@ var targets: [Target] = [
         dependencies: [
             "MacSplorerCore",
             .product(name: "AWSS3", package: "aws-sdk-swift"),
+            // Clearing CloudFront's cached copy after Fix Content Type.
+            .product(name: "AWSCloudFront", package: "aws-sdk-swift"),
         ]
     ),
 

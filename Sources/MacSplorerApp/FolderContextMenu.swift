@@ -1,5 +1,6 @@
 import AppKit
 import MacSplorerCore
+import MacSplorerS3
 
 /// One action in the shared folder context menu (right-clicking a folder in the
 /// tree or the Favorites pane). Carried as a menu item's `representedObject`.
@@ -8,7 +9,7 @@ final class FolderMenuAction: NSObject {
         case open, openInNewWindow, openInTerminal
         case cut, copy, pasteInto, duplicate, rename, trash
         case reveal, copyPath, addFavorite, removeFavorite
-        case eject, getInfo, calculateSizes
+        case eject, getInfo, calculateSizes, setPublicAddress
     }
     let kind: Kind
     let url: URL
@@ -65,6 +66,9 @@ enum FolderContextMenu {
         menu.addItem(.separator())
         add("Reveal in Finder", .reveal)
         add("Copy Path", .copyPath)
+        if S3PublicLinkCommand.isBucket(url) {
+            add("Set Public Address…", .setPublicAddress)
+        }
         menu.addItem(.separator())
         if Favorites.shared.contains(url) {
             add("Remove from Favorites", .removeFavorite)
@@ -128,6 +132,9 @@ enum FolderContextMenu {
         case .eject: eject(url)
         case .getInfo: (NSApp.delegate as? AppDelegate)?.presentGetInfo(for: url)
         case .calculateSizes: (NSApp.delegate as? AppDelegate)?.calculateFolderSizes(for: url)
+        case .setPublicAddress:
+            // Menu actions run on the main thread; say so to the compiler.
+            MainActor.assumeIsolated { S3PublicLinkCommand.setAddress(forBucketURL: url) }
         }
     }
 

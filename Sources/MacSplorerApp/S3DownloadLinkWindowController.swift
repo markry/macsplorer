@@ -48,7 +48,7 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
         self.profile = profile
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 340),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "Copy Download Link"
+        window.title = "Copy Temporary Link"
         super.init(window: window)
         window.delegate = self
         buildUI()
@@ -65,7 +65,7 @@ final class S3DownloadLinkWindowController: NSWindowController, NSWindowDelegate
         guard let content = window?.contentView else { return }
         let pad: CGFloat = 16
 
-        let heading = NSTextField(labelWithString: "Download link for “\(objectName)”")
+        let heading = NSTextField(labelWithString: "Temporary link for “\(objectName)”")
         heading.font = .boldSystemFont(ofSize: 13)
         heading.lineBreakMode = .byTruncatingMiddle
 

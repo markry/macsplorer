@@ -653,12 +653,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         controller.window?.makeKeyAndOrderFront(nil)
     }
 
-    /// Show the "Copy Download Link" panel for an S3 object (retained until closed;
+    /// Show the "Copy Temporary Link" panel for an S3 object (retained until closed;
     /// a second request for the same object refocuses the open panel).
     private var downloadLinkControllers: [S3DownloadLinkWindowController] = []
     func presentS3DownloadLink(for url: URL) {
         guard case .prefix(let profile, _, _) = S3Location.parse(url) else { return }
-        if let existing = downloadLinkControllers.first(where: { $0.window?.title == "Copy Download Link" && $0.objectURL == url }) {
+        if let existing = downloadLinkControllers.first(where: { $0.window?.title == "Copy Temporary Link" && $0.objectURL == url }) {
             existing.window?.makeKeyAndOrderFront(nil)
             return
         }

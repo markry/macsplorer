@@ -109,6 +109,15 @@ final class Preferences {
         set { defaults.set(newValue, forKey: "s3CredentialLocations") }
     }
 
+    /// Each S3 bucket's public address for Copy Public Link — bucket name →
+    /// normalized base URL (`https://example.com/`). Keyed by bucket alone: bucket
+    /// names are globally unique, so the profile used to reach it doesn't matter.
+    /// Set by the prompt on first use, changed via the bucket's Set Public Address….
+    var s3PublicAddresses: [String: String] {
+        get { defaults.dictionary(forKey: "s3PublicAddresses") as? [String: String] ?? [:] }
+        set { defaults.set(newValue, forKey: "s3PublicAddresses") }
+    }
+
     /// Whether the in-window menu bar is shown. On by default.
     var showMenuBar: Bool {
         get { defaults.object(forKey: "showMenuBar") as? Bool ?? true }

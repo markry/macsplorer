@@ -53,6 +53,29 @@ public protocol FileSystemProvider {
     /// Whether something is already at `url`, so a copy can ask before replacing it.
     func exists(_ url: URL) async -> Bool
 
+    /// Whether this backend can copy `source` to `destination` itself, without the
+    /// bytes passing through this Mac (S3's server-side copy, for instance). When it
+    /// can't, a transfer falls back to download-then-upload.
+    /// Rename `url` asynchronously — for backends whose rename needs the network.
+    /// Returns the renamed item's URL. Local providers inherit the default, which
+    /// is the synchronous `rename`.
+    func renameAsync(_ url: URL, to newName: String) async throws -> URL
+
+    /// Rename something that may take a while (an S3 file or a folder with
+    /// contents, which must be copied and the originals deleted). Advances and
+    /// honours `progress`. A stop or failure leaves the original intact. Default:
+    /// `renameAsync`.
+    func renameWithProgress(_ url: URL, to newName: String,
+                            progress: ProviderProgress?) async throws -> URL
+
+    func canCopyDirectly(_ source: URL, to destination: URL) async -> Bool
+
+    /// Copy `source` to the exact `destination` within this backend, server-side.
+    /// Advances `progress` by bytes as parts complete and stops between parts when
+    /// it is cancelled (throwing `CancellationError`, leaving nothing half-made).
+    /// Only call when `canCopyDirectly` said yes.
+    func copyDirectly(_ source: URL, to destination: URL, progress: ProviderProgress?) async throws
+
     /// How much is at or under `url`, looking no further than `limit` items — what a
     /// confirmation dialog needs before a delete. Bounded on purpose: counting a
     /// remote prefix in full can take minutes, so a provider returns an exact number
@@ -118,6 +141,21 @@ public extension FileSystemProvider {
     func upload(_ file: URL, to destination: URL) async throws {
         guard destination.isFileURL else { throw ProviderError.uploadUnsupported(destination) }
         try FileManager.default.copyItem(at: file, to: destination)
+    }
+
+    func renameAsync(_ url: URL, to newName: String) async throws -> URL {
+        try rename(url, to: newName)
+    }
+
+    func renameWithProgress(_ url: URL, to newName: String,
+                            progress: ProviderProgress?) async throws -> URL {
+        try await renameAsync(url, to: newName)
+    }
+
+    func canCopyDirectly(_ source: URL, to destination: URL) async -> Bool { false }
+
+    func copyDirectly(_ source: URL, to destination: URL, progress: ProviderProgress?) async throws {
+        throw ProviderError.uploadUnsupported(destination)
     }
 
     func exists(_ url: URL) async -> Bool {

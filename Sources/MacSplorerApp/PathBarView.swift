@@ -10,6 +10,9 @@ final class PathBarView: NSView {
     var onSegment: ((URL) -> Void)?
     /// The user clicked the bar (not a segment) — switch to the editable field.
     var onActivateEdit: (() -> Void)?
+    /// A command chosen from a segment's right-click menu (cut, paste into, new
+    /// folder, rename…) — routed by the host exactly as the tree's are.
+    var onFolderCommand: ((FolderCommand, URL) -> Void)?
 
     private let stack = NSStackView()
 
@@ -134,6 +137,14 @@ final class PathBarView: NSView {
     private func makeButton(title: String, symbol: String? = nil, url: URL) -> NSButton {
         let button = SegmentButton(title: title, target: self, action: #selector(segmentClicked(_:)))
         button.url = url
+        // Right-click a segment for that folder's commands — the same menu as the
+        // tree's, reachable whether or not the tree has that folder in view.
+        button.menuProvider = { [weak self] in
+            guard let self else { return nil }
+            return FolderContextMenu.make(for: url, target: self,
+                                          action: #selector(self.handleFolderMenu(_:)),
+                                          newAction: #selector(self.handleFolderNew(_:)))
+        }
         button.bezelStyle = .recessed
         button.setButtonType(.momentaryPushIn)
         button.isBordered = true
@@ -173,9 +184,27 @@ final class PathBarView: NSView {
         guard let url = sender.url else { return }
         onSegment?(url)
     }
+
+    @objc private func handleFolderMenu(_ sender: NSMenuItem) {
+        guard let action = sender.representedObject as? FolderMenuAction else { return }
+        FolderContextMenu.perform(action,
+            open: { [weak self] in self?.onSegment?($0) },
+            command: { [weak self] in self?.onFolderCommand?($0, $1) })
+    }
+
+    @objc private func handleFolderNew(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? NewMenuChoice else { return }
+        FolderContextMenu.performNew(choice) { [weak self] in self?.onFolderCommand?($0, $1) }
+    }
 }
 
-/// An `NSButton` that carries the folder URL it navigates to.
+/// An `NSButton` that carries the folder URL it navigates to, and supplies that
+/// folder's context menu on right-click.
 private final class SegmentButton: NSButton {
     var url: URL?
+    var menuProvider: (() -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        menuProvider?() ?? super.menu(for: event)
+    }
 }

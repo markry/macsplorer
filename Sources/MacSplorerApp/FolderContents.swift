@@ -82,7 +82,10 @@ final class FolderContents: NSObject {
     /// Work that may run long (deleting a remote prefix, copying one to the Trash):
     /// the host shows the status bar's progress and Stop, driven by the passed
     /// `ProviderProgress` — the same controls the folder-size scan uses.
-    var onBackgroundWork: ((String, ProviderProgress) -> Void)?
+    /// Long work started: title, its progress, and whether to show progress almost
+    /// at once (transfers, which are expected to take a while) rather than only if
+    /// it outlasts the usual delay (deletes, which mostly finish in a blink).
+    var onBackgroundWork: ((String, ProviderProgress, Bool) -> Void)?
     /// That work finished, was stopped, or failed.
     var onBackgroundWorkEnded: (() -> Void)?
 

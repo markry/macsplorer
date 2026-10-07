@@ -232,6 +232,8 @@ public final class S3Provider: FileSystemProvider {
         let config = try await S3Client.S3ClientConfiguration(
             awsCredentialIdentityResolver: resolver,
             region: region)
+        // Keep a key's trailing "/" (folder markers) — the SDK drops it otherwise.
+        config.addInterceptorProvider(TrailingSlashKeyInterceptorProvider())
         return S3Client(config: config)
     }
 
@@ -590,6 +592,9 @@ public enum S3Error: LocalizedError {
     case bucketExists(name: String)
     /// A folder name S3 can't carry.
     case invalidFolderName(name: String)
+    /// Rename of something S3 can't rename cheaply yet: a file, or a folder with
+    /// contents (each would be a copy of everything plus a delete).
+    case renameUnsupported(name: String)
 
     public var errorDescription: String? {
         switch self {
@@ -625,6 +630,10 @@ public enum S3Error: LocalizedError {
             return "You already have a bucket named \u{201C}\(name)\u{201D}."
         case .invalidFolderName(let name):
             return "\u{201C}\(name)\u{201D} can\u{2019}t be used as a folder name here."
+        case .renameUnsupported(let name):
+            return "\u{201C}\(name)\u{201D} can\u{2019}t be renamed on S3 yet. Only empty folders "
+                + "can be renamed in this version; S3 has no rename, so a file or a folder "
+                + "with contents would have to be copied in full and the original deleted."
         case .cannotDelete(let name, let reason):
             return "Can\u{2019}t delete \u{201C}\(name)\u{201D}: \(reason)"
         case .deleteDenied(let name, let profile):
@@ -678,7 +687,7 @@ actor S3ClientPool {
         return try await client(profile: profile, region: region)
     }
 
-    private func regionForBucket(profile: String, bucket: String) async throws -> String {
+    func regionForBucket(profile: String, bucket: String) async throws -> String {
         // Same identity as the clients: a region looked up with one credential source
         // isn't reused for another.
         guard let paths = AWSProfiles.resolverPaths(forProfile: profile) else {

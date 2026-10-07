@@ -68,7 +68,7 @@ extension FolderContents {
         Task { @MainActor [weak self] in
             guard let self, let choice = await RemoteDelete.confirm(urls) else { return }
             let progress = ProviderProgress()
-            self.onBackgroundWork?(choice == .copyToTrash ? "Copying to Trash" : "Deleting", progress)
+            self.onBackgroundWork?(choice == .copyToTrash ? "Copying to Trash" : "Deleting", progress, false)
             let work = Task { @MainActor in
                 try await RemoteDelete.perform(urls, choice: choice, progress: progress)
             }
@@ -192,6 +192,41 @@ extension FolderContents {
         let item = items[index]
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != item.name else { return false }
+        // A remote rename needs the network: let the edit close now, then reload
+        // with the result — the new name on success, the old one (and why) if not.
+        // On S3 a file, or a folder with contents, is a copy of everything plus a
+        // delete, so a folder asks first (with a count) and both show progress/Stop.
+        if !item.url.isFileURL {
+            let parent = item.url.deletingLastPathComponent()
+            let provider = Providers.provider(for: item.url)
+            let isFolder = item.isDirectory && !item.isPackage
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if isFolder, let count = try? await provider.peekCount(at: item.url, limit: 1000),
+                   count.items > 1 || count.isPartial,
+                   !self.confirmRemoteRename(item.url, from: item.name, to: trimmed, count: count) {
+                    self.finishMutation(affected: [parent], selecting: [item.name])
+                    return
+                }
+                let progress = ProviderProgress()
+                self.onBackgroundWork?("Renaming", progress, true)
+                let work = Task { try await provider.renameWithProgress(item.url, to: trimmed, progress: progress) }
+                progress.onCancel { work.cancel() }
+                let result = await work.result
+                self.onBackgroundWorkEnded?()
+                switch result {
+                case .success(let dest):
+                    self.finishMutation(affected: [parent], selecting: [dest.lastPathComponent])
+                case .failure(let error):
+                    Diag.rename.error("remote rename failed: \(Diag.describe(error), privacy: .public)")
+                    self.finishMutation(affected: [parent], selecting: [item.name])
+                    if !(error is CancellationError) {
+                        self.reportRenameFailure(name: trimmed, error: error)
+                    }
+                }
+            }
+            return true
+        }
         do {
             let dest = try Providers.provider(for: item.url).rename(item.url, to: newName)
             finishMutation(affected: [item.url.deletingLastPathComponent()],
@@ -201,6 +236,32 @@ extension FolderContents {
             reportRenameFailure(name: trimmed, error: error)
             return false
         }
+    }
+
+    /// Confirm renaming a remote folder that has contents: say how much will be
+    /// copied, that the originals are deleted only once every copy has landed, and
+    /// that web links to the files change (naming the address when the bucket has
+    /// a public one set).
+    private func confirmRemoteRename(_ url: URL, from oldName: String, to newName: String,
+                                     count: ProviderCount) -> Bool {
+        let amount = count.isPartial
+            ? "More than \(count.items.formatted()) objects"
+            : "\(count.items.formatted()) object\(count.items == 1 ? "" : "s") · \(FSFormat.size(count.bytes))"
+        var links = "Any links to these files will stop working."
+        if case .prefix(_, let bucket, let key) = S3Location.parse(url),
+           let base = Preferences.shared.s3PublicAddresses[bucket] {
+            let oldPath = S3PublicLink.encodeKey(key.hasSuffix("/") ? key : key + "/")
+            links = "Web links will change: \(base)\(oldPath)… will no longer work."
+        }
+        let alert = NSAlert()
+        alert.messageText = "Rename “\(oldName)” to “\(newName)”?"
+        alert.informativeText = "\(amount).\n\n"
+            + "S3 has no rename, so every file is copied to the new name on S3 and the originals are "
+            + "deleted only after all the copies have succeeded. If you stop it or something fails, "
+            + "the originals are kept and the partial copy is removed.\n\n\(links)"
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Surface a rename failure with a clear reason instead of just a beep. The
@@ -241,6 +302,16 @@ extension FolderContents {
     /// Create a folder — or, at the top level of a provider that has containers of
     /// its own, a bucket — on a remote provider.
     private func makeRemoteFolder(in target: URL) {
+        // Inside a bucket a folder behaves like a local one: it appears as
+        // "untitled folder" with its name ready to type over (renaming an empty S3
+        // folder is just a new marker plus a delete). Only a new BUCKET still asks
+        // up front — its name can never change afterwards, and it needs a region.
+        var atProfileLevel = false
+        if case .profile = S3Location.parse(target) { atProfileLevel = true }
+        if !atProfileLevel {
+            makeRemoteFolderInPlace(in: target)
+            return
+        }
         Task { @MainActor [weak self] in
             guard let self, let choice = await NewRemoteFolder.ask(in: target) else { return }
             do {
@@ -254,8 +325,38 @@ extension FolderContents {
                 }
                 self.finishMutation(affected: [target], selecting: [created.lastPathComponent])
             } catch {
+                Diag.transfer.error("create remote folder failed: \(Diag.describe(error), privacy: .public)")
                 let alert = NSAlert()
                 alert.messageText = "Couldn’t create “\(choice.name)”."
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+        }
+    }
+
+    /// Create "untitled folder" (or "untitled folder 2", …) in a remote location,
+    /// then start an inline rename on it, as for a local New Folder.
+    private func makeRemoteFolderInPlace(in target: URL) {
+        let provider = Providers.provider(for: target)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                var name = "untitled folder"
+                var n = 2
+                while await provider.exists(target.appendingPathComponent(name, isDirectory: true)) {
+                    name = "untitled folder \(n)"
+                    n += 1
+                }
+                let created = try await provider.createFolder(in: target, named: name)
+                if !self.samePath(target, self.folder) { self.onOpenFolder?(target) }
+                self.finishMutation(affected: [target], selecting: [created.lastPathComponent],
+                                    renameFirst: true)
+            } catch {
+                Diag.transfer.error("create remote folder failed: \(Diag.describe(error), privacy: .public)")
+                let alert = NSAlert()
+                alert.messageText = "Couldn’t create a new folder."
                 alert.informativeText = error.localizedDescription
                 alert.alertStyle = .warning
                 alert.addButton(withTitle: "OK")
@@ -382,6 +483,18 @@ extension FolderContents {
         return allowed.contains(.copy) ? .copy : []
     }
 
+    /// Whether a drop of our own remote items moves them, as Finder decides for
+    /// disks: within the same place (one S3 bucket under one profile) a plain drag
+    /// moves; anywhere else it copies; Option always copies.
+    func remoteDropMoves(_ sources: [URL], into destination: URL) -> Bool {
+        if NSEvent.modifierFlags.contains(.option) { return false }
+        guard case .prefix(let profile, let bucket, _) = S3Location.parse(destination) else { return false }
+        return sources.allSatisfy {
+            if case .prefix(let p, let b, _) = S3Location.parse($0) { return p == profile && b == bucket }
+            return false
+        }
+    }
+
     func isSelfOrDescendant(_ url: URL, of directory: URL) -> Bool {
         let target = url.standardizedFileURL.path
         let dir = directory.standardizedFileURL.path
@@ -399,7 +512,7 @@ extension FolderContents {
         // backend boundary are bridged here. Into a remote location: every source is
         // uploaded, fetched first if it is itself remote.
         guard destination.isFileURL || destination.scheme == nil else {
-            uploadTransfer(urls, into: destination, selectLanded: selectLanded)
+            uploadTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
             return
         }
         // Out of a remote location into a local folder: a download.
@@ -542,42 +655,66 @@ extension FolderContents {
         }
     }
 
-    /// Copy files into a remote provider by uploading them — the other half of a
-    /// copy between backends. A source that is itself remote (another S3 location,
-    /// say) is downloaded to a scratch folder first, so any backend that can download
-    /// can copy into any backend that can upload.
+    /// Copy or move items into a remote location (an S3 prefix, say).
     ///
-    /// Always a copy: removing the original would mean deleting it at its source,
-    /// which no remote provider supports yet, so a "move" leaves the original alone.
-    /// A provider that can't accept uploads (the default) reports that plainly.
-    private func uploadTransfer(_ urls: [URL], into destination: URL, selectLanded: Bool) {
+    /// When the destination's backend can copy the source itself — S3 to S3 under
+    /// one profile — it does, server-side: no bytes pass through this Mac, and a
+    /// move then deletes the original once the copy has landed. Otherwise each
+    /// source is downloaded to a scratch folder (if remote) and uploaded, so any
+    /// backend that can download can copy into any backend that can upload; such a
+    /// cross-backend "move" leaves the original alone.
+    ///
+    /// Progress and Stop go through the pane's status bar, as remote deletes do.
+    private func uploadTransfer(_ urls: [URL], into destination: URL, move: Bool,
+                                selectLanded: Bool) {
         let ask = Preferences.shared.promptOnCollision
         let target = Providers.provider(for: destination)
         Task { @MainActor [weak self] in
             guard let self else { return }
             var landed: [String] = []
+            var affected: Set<URL> = [destination]
             var applyToAll: CollisionChoice?
             var failure: (name: String, error: Error)?
             let scratch = FileManager.default.temporaryDirectory
                 .appendingPathComponent("macsplorer-transfer-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: scratch) }
 
+            let progress = ProviderProgress()
+            progress.setTotal(urls.count, isPartial: false)
+            self.onBackgroundWork?(move ? "Moving" : "Copying", progress, true)
+            // Stop cancels whichever operation is running, not just a flag: a single
+            // CopyObject or upload is one long request with no loop to check one.
+            var work: Task<Void, Error>?
+            progress.onCancel { Task { @MainActor in work?.cancel() } }
+
             for source in urls {
+                if progress.isCancelled { break }
                 let name = source.lastPathComponent
+                // Dropping something onto its own folder (or itself) does nothing.
+                if self.samePath(source.deletingLastPathComponent(), destination)
+                    || self.isSelfOrDescendant(source, of: destination) { continue }
                 do {
+                    let direct = await target.canCopyDirectly(
+                        source, to: destination.appendingPathComponent(name))
+                    Diag.transfer.info("transfer: direct=\(direct, privacy: .public) move=\(move, privacy: .public)")
                     // Something local to send: the source itself, or a download of it.
                     var local = source
-                    if !(source.isFileURL || source.scheme == nil) {
+                    if !direct && !(source.isFileURL || source.scheme == nil) {
                         if source.hasDirectoryPath { throw TransferRefusal.remoteFolder(name) }
                         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
                         local = scratch.appendingPathComponent(name)
-                        self.onStatus?("Downloading “\(name)”…")
-                        try await Providers.provider(for: source).download(source, to: local)
+                        progress.advance(items: 0, detail: "downloading “\(name)”")
+                        let download = Task { try await Providers.provider(for: source).download(source, to: local) }
+                        work = download
+                        try await download.value
                     }
 
-                    var isDirectory: ObjCBool = false
-                    FileManager.default.fileExists(atPath: local.path, isDirectory: &isDirectory)
-                    let isFolder = isDirectory.boolValue
+                    var isFolder = false
+                    if !direct {
+                        var isDirectory: ObjCBool = false
+                        FileManager.default.fileExists(atPath: local.path, isDirectory: &isDirectory)
+                        isFolder = isDirectory.boolValue
+                    }
                     var placed = destination.appendingPathComponent(name, isDirectory: isFolder)
 
                     if await target.exists(placed) {
@@ -601,24 +738,49 @@ extension FolderContents {
                         // and must leave the original intact if that fails.
                     }
 
-                    self.onStatus?("Uploading “\(name)”…")
-                    if isFolder {
-                        try await self.uploadFolder(local, to: placed, provider: target)
+                    if direct {
+                        progress.advance(items: 0, detail: "“\(name)”")
+                        let copy = Task { try await target.copyDirectly(source, to: placed, progress: progress) }
+                        work = copy
+                        try await copy.value
+                        // A move deletes the original only once the copy is really there.
+                        if move {
+                            guard await target.exists(placed) else { throw TransferRefusal.sourceMissing }
+                            try await Providers.provider(for: source).deletePermanently(source, progress: nil)
+                            affected.insert(source.deletingLastPathComponent())
+                        }
                     } else {
-                        try await target.upload(local, to: placed)
+                        progress.advance(items: 0, detail: "uploading “\(name)”")
+                        let upload = Task {
+                            if isFolder {
+                                try await self.uploadFolder(local, to: placed, provider: target)
+                            } else {
+                                try await target.upload(local, to: placed)
+                            }
+                        }
+                        work = upload
+                        try await upload.value
+                        progress.advance(items: 1, detail: "“\(name)”")
                     }
                     landed.append(placed.lastPathComponent)
+                } catch is CancellationError {
+                    Diag.transfer.info("transfer: stopped")
+                    break
                 } catch {
+                    Diag.transfer.error("transfer failed: \(Diag.describe(error), privacy: .public)")
+                    if progress.isCancelled { break }
                     NSSound.beep()
                     if failure == nil { failure = (name, error) }
                 }
             }
+            Diag.transfer.info("transfer: done, landed=\(landed.count, privacy: .public) of \(urls.count, privacy: .public)")
 
+            self.onBackgroundWorkEnded?()
             self.emitStatus()
-            self.finishMutation(affected: [destination], selecting: selectLanded ? landed : [])
+            self.finishMutation(affected: affected, selecting: selectLanded ? landed : [])
             if !selectLanded { self.followInto(destination, selecting: landed) }
             if let failure {
-                self.reportTransferFailure(failure.name, error: failure.error, moving: false)
+                self.reportTransferFailure(failure.name, error: failure.error, moving: move)
             }
         }
     }
@@ -764,8 +926,10 @@ extension FolderContents {
         let providerURLs = RemoteFilePromise.providerURLs(on: info.draggingPasteboard)
         if !providerURLs.isEmpty {
             let selectLanded = samePath(destination, folder)
+            let move = remoteDropMoves(providerURLs, into: destination)
+            Diag.transfer.info("drop: \(providerURLs.count, privacy: .public) remote item(s), move=\(move, privacy: .public)")
             DispatchQueue.main.async { [weak self] in
-                self?.performTransfer(providerURLs, into: destination, move: false,
+                self?.performTransfer(providerURLs, into: destination, move: move,
                                       selectLanded: selectLanded)
             }
             return true
@@ -899,6 +1063,9 @@ extension FolderContents {
             add(menu, "Open in Terminal", #selector(ctxTerminal(_:)), target)
             add(menu, "Reveal in Finder", #selector(ctxReveal(_:)), target)
             add(menu, "Copy Path", #selector(ctxCopyPath(_:)), target)
+            if let folder, S3PublicLinkCommand.isBucket(folder) {
+                add(menu, "Set Public Address…", #selector(ctxSetPublicAddressFolder(_:)), target)
+            }
             menu.addItem(.separator())
             add(menu, "Calculate Folder Sizes…", #selector(ctxCalculateFolderSizesFolder(_:)), target)
             add(menu, "Get Info", #selector(ctxGetInfoFolder(_:)), target)
@@ -927,10 +1094,18 @@ extension FolderContents {
             menu.addItem(.separator())
             add(menu, "Show in Enclosing Folder", #selector(ctxShowInEnclosingFolder(_:)), target)
         }
-        // Presigned download link — S3 objects only (not folders/prefixes).
+        // Links to S3 objects (not folders/prefixes): a plain public link at the
+        // bucket's public address, and a presigned temporary one (which works on
+        // private objects too, and expires).
         if item.url.scheme == S3Location.scheme && !isFolder {
             menu.addItem(.separator())
-            add(menu, "Copy Download Link…", #selector(ctxDownloadLink(_:)), target)
+            add(menu, "Copy Public Link", #selector(ctxCopyPublicLink(_:)), target)
+            add(menu, "Copy Temporary Link…", #selector(ctxDownloadLink(_:)), target)
+        }
+        // The public address is a property of the bucket, so it's set on the bucket.
+        if isFolder && S3PublicLinkCommand.isBucket(item.url) {
+            menu.addItem(.separator())
+            add(menu, "Set Public Address…", #selector(ctxSetPublicAddress(_:)), target)
         }
         menu.addItem(.separator())
         add(menu, "Cut", #selector(ctxCut(_:)), target)
@@ -1028,6 +1203,21 @@ extension FolderContents {
     }
     @objc func ctxCopyPath(_ sender: Any?) { copySelectionPaths() }
     @objc func ctxTerminal(_ sender: Any?) { openSelectionInTerminal() }
+    // Menu actions run on the main thread; `assumeIsolated` says so to the compiler.
+    @objc func ctxCopyPublicLink(_ sender: Any?) {
+        // Option-click re-asks for the bucket's public address first.
+        let urls = selectedURLs()
+        let force = NSEvent.modifierFlags.contains(.option)
+        MainActor.assumeIsolated { S3PublicLinkCommand.copy(urls, forcePrompt: force) }
+    }
+    @objc func ctxSetPublicAddress(_ sender: Any?) {
+        guard let url = selectedURLs().first(where: S3PublicLinkCommand.isBucket) else { return }
+        MainActor.assumeIsolated { S3PublicLinkCommand.setAddress(forBucketURL: url) }
+    }
+    @objc func ctxSetPublicAddressFolder(_ sender: Any?) {
+        guard let folder, S3PublicLinkCommand.isBucket(folder) else { return }
+        MainActor.assumeIsolated { S3PublicLinkCommand.setAddress(forBucketURL: folder) }
+    }
     @objc func ctxDownloadLink(_ sender: Any?) {
         guard let url = selectedURLs().first(where: { $0.scheme == S3Location.scheme }) else { return }
         (NSApp.delegate as? AppDelegate)?.presentS3DownloadLink(for: url)

@@ -6,7 +6,7 @@ extensions*, Date Modified, Type, Size) on the right, and a copyable full-path
 address bar on top — the things that feel missing when you come to Finder from
 Windows.
 
-> **Status:** v0.11.0.
+> **Status:** v0.12.0.
 
 ## Download
 
@@ -231,8 +231,21 @@ Inside a bucket, **New Folder** writes a zero-byte `name/` marker, the same
 convention the AWS console uses — which is also how an empty folder can exist in
 a store that has no folders.
 
-**Sharing a link.** Right-click an object ▸ **Copy Download Link…** creates a
-presigned URL: pick how long it lasts, whether the browser should display the
+**Sharing a link.** Right-click an object for two kinds of link.
+
+**Copy Public Link** copies a plain, permanent link for a bucket that's served
+publicly — usually through CloudFront at your own domain. The first time, it asks
+for the bucket's public address (say `https://example.com/`), starting from the
+bucket's own S3 address, and remembers it for every file in that bucket. Change it
+later from the bucket's right-click menu ▸ **Set Public Address…**, or hold Option
+while choosing Copy Public Link. Names are percent-encoded properly (spaces, `+`,
+`#` and non-English letters included). After copying, MacSplorer requests the link
+anonymously, as a browser would, and tells you if it doesn't work — or if the file
+would download rather than play because of the content type stored on it, which a
+public link can't override.
+
+**Copy Temporary Link…** creates a presigned URL, which works for private objects
+too and expires: pick how long it lasts, whether the browser should display the
 file or download it, and the content type it's served as. The type defaults to
 what the file's extension implies rather than what's stored on the object, since
 objects are routinely stored as `application/octet-stream` and a video then

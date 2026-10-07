@@ -21,11 +21,14 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     private var historyIndex = -1
     private var isNavigatingHistory = false
     private var addressFieldEditor: AddressFieldEditor?
-    private let statusLabel = NSTextField(labelWithString: "")
+    private let statusLabel = ContextMenuLabel(labelWithString: "")
     /// Spinner shown at the leading edge of the status bar while a remote (S3)
     /// folder is loading — feedback that a network read is in flight.
     private let loadSpinner = NSProgressIndicator()
     private let statusStack = NSStackView()
+    /// Invisible strip behind the whole status row, so a right-click anywhere on
+    /// the bar (not just on its text) gets the current folder's menu.
+    private let statusHitArea = ContextMenuArea()
     private let viewModeControl = ViewModeControl()
 
     // Folder-size scan (occasional, background) — status-bar feedback + Stop.
@@ -41,6 +44,8 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     private var workProgressTimer: Timer?
     /// How long work must run before the progress controls appear.
     private static let workProgressDelay: TimeInterval = 5
+    /// Transfers are expected to take time, so their progress shows almost at once.
+    private static let quickProgressDelay: TimeInterval = 0.5
     private var scanProgressTimer: Timer?
     private var scanStartDate: Date?
     private let splitView = NSSplitView()
@@ -621,12 +626,15 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
             self?.handleFolderCommand(command, url: url)
         }
         contents.onOpenFolder = { [weak self] url in self?.navigate(to: url) }
-        contents.onBackgroundWork = { [weak self] title, progress in
-            self?.beginBackgroundWork(title: title, progress: progress)
+        contents.onBackgroundWork = { [weak self] title, progress, quick in
+            self?.beginBackgroundWork(title: title, progress: progress, quick: quick)
         }
         contents.onBackgroundWorkEnded = { [weak self] in self?.endBackgroundWork() }
         contents.onStatus = { [weak self] status in
-            self?.statusLabel.stringValue = status
+            // While long work is running the status bar belongs to its progress; a
+            // routine refresh (item counts) would otherwise wipe it mid-transfer.
+            guard let self, self.activeWork == nil else { return }
+            self.statusLabel.stringValue = status
         }
         contents.onSelectionChanged = { [weak self] in self?.refreshPathBarForSelection() }
         contents.onLoadingChanged = { [weak self] loading in
@@ -642,6 +650,9 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         // empty area switches to the editable field (Explorer-style).
         pathBar.onSegment = { [weak self] url in self?.navigate(to: url) }
         pathBar.onActivateEdit = { [weak self] in self?.beginAddressEditing() }
+        pathBar.onFolderCommand = { [weak self] command, url in
+            self?.handleFolderCommand(command, url: url)
+        }
         // Tab cycles focus between the main panes.
         tableView.onTab = { [weak self] back in self?.advanceFocus(from: .right, backward: back) }
         outlineView.onTab = { [weak self] back in self?.advanceFocus(from: .tree, backward: back) }
@@ -797,6 +808,8 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         statusStack.translatesAutoresizingMaskIntoConstraints = false
         statusStack.addArrangedSubview(loadSpinner)
         statusStack.addArrangedSubview(statusLabel)
+        statusHitArea.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(statusHitArea)       // first, so the controls sit on top of it
         root.addSubview(statusStack)
         root.addSubview(scanControls)
         root.addSubview(viewModeControl)
@@ -831,6 +844,11 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
             splitView.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: pad),
             splitView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             splitView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+
+            statusHitArea.topAnchor.constraint(equalTo: splitView.bottomAnchor),
+            statusHitArea.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            statusHitArea.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            statusHitArea.trailingAnchor.constraint(equalTo: viewModeControl.leadingAnchor, constant: -4),
 
             statusStack.topAnchor.constraint(equalTo: splitView.bottomAnchor, constant: 4),
             statusStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: pad),
@@ -922,6 +940,17 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         // forcing the window wider.
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // Right-clicking the status bar gives the menu for the folder being viewed —
+        // the same one as empty space in the list. When the list is full, rows cover
+        // every pixel, so this is the one place that's always free to click.
+        let folderMenu: () -> NSMenu? = { [weak self] in
+            guard let self, self.contents.folder != nil else { return nil }
+            return self.contents.contextMenu(clickedIndex: -1, target: self.contents)
+        }
+        statusLabel.menuProvider = folderMenu
+        statusHitArea.menuProvider = folderMenu
+        statusHitArea.toolTip = "Right-click for this folder’s commands"
+        statusLabel.toolTip = "Right-click for this folder’s commands"
     }
 
     private func configureHistoryButtons() {
@@ -998,11 +1027,12 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// but only once it has actually taken a while. Most deletes finish in under a
     /// second, and a spinner that flashes up and vanishes reads as a glitch, so the
     /// controls appear only if the work is still running after `workProgressDelay`.
-    private func beginBackgroundWork(title: String, progress: ProviderProgress) {
+    private func beginBackgroundWork(title: String, progress: ProviderProgress, quick: Bool = false) {
         activeWork = progress
         workTitle = title
         workStartDate = Date()
-        workRevealTimer = Timer.scheduledTimer(withTimeInterval: Self.workProgressDelay,
+        workRevealTimer = Timer.scheduledTimer(withTimeInterval: quick ? Self.quickProgressDelay
+                                                                     : Self.workProgressDelay,
                                                repeats: false) { [weak self] _ in
             self?.revealWorkProgress()
         }
@@ -1159,5 +1189,26 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         scroll.borderType = .noBorder
         scroll.translatesAutoresizingMaskIntoConstraints = false
         return scroll
+    }
+}
+
+
+/// A label that supplies a context menu on demand — used for the status bar, so
+/// right-clicking it acts on the folder being viewed.
+final class ContextMenuLabel: NSTextField {
+    var menuProvider: (() -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        menuProvider?() ?? super.menu(for: event)
+    }
+}
+
+/// A transparent view that supplies a context menu on demand — the status bar's
+/// empty stretch, so right-clicking anywhere along it works.
+final class ContextMenuArea: NSView {
+    var menuProvider: (() -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        menuProvider?() ?? super.menu(for: event)
     }
 }
