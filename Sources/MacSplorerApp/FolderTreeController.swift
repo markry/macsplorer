@@ -193,6 +193,20 @@ final class FolderTreeController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(appBecameActive),
             name: NSApplication.didBecomeActiveNotification, object: nil)
+        // A cut folder draws faded here too, whichever pane or window did the cutting.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(clipboardDidChange),
+            name: Clipboard.didChange, object: nil)
+    }
+
+    /// Re-fade the rows in place rather than reloading, which would disturb the
+    /// selection and any expansion in progress.
+    @objc private func clipboardDidChange() {
+        for row in 0..<outlineView.numberOfRows {
+            guard let item = outlineView.item(atRow: row) as? FSItem,
+                  let cell = outlineView.view(atColumn: 0, row: row, makeIfNecessary: false) else { continue }
+            cell.alphaValue = Clipboard.shared.isCut(item.url) ? 0.5 : 1
+        }
     }
 
     deinit {
@@ -515,6 +529,7 @@ extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
             ?? Self.makeCell()
         cell.textField?.stringValue = fsItem.name
         cell.imageView?.image = fsItem.displayIcon
+        cell.alphaValue = Clipboard.shared.isCut(fsItem.url) ? 0.5 : 1
         return cell
     }
 

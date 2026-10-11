@@ -530,6 +530,17 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
             advanceFocus(from: .fab, backward: true)
             return true
         }
+        // Escape leaves edit mode: hand focus to the file list, and the resulting
+        // blur flips back to the breadcrumb (discarding whatever was typed). With
+        // the completion list open, Escape closes that first and never gets here.
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            if viewMode == "icon", let icon = iconController {
+                view.window?.makeFirstResponder(icon.keyView)
+            } else {
+                view.window?.makeFirstResponder(tableView)
+            }
+            return true
+        }
         return false
     }
 
