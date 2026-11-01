@@ -491,6 +491,9 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// delete we still show the matches, but don't inline-fill — otherwise the
     /// re-added suffix would fight the deletion.
     private var lastEditWasDelete = false
+    /// Set when a click opened the FAB with the whole path selected: the first
+    /// Right arrow then appends the trailing "/" (see `beginAddressEditing`).
+    private var slashOnRightArrow = false
 
     /// When focus genuinely leaves the address field, flip back to the breadcrumb.
     /// Deferred + re-checked because Enter navigates and *re-focuses* the field
@@ -506,6 +509,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
 
     func controlTextDidChange(_ obj: Notification) {
         guard (obj.object as? NSTextField) === addressField else { return }
+        slashOnRightArrow = false
         updateTerminalButton()
         guard !isCompleting else { return }
         isCompleting = true
@@ -520,6 +524,21 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
             || commandSelector == #selector(NSResponder.deleteForward(_:)) {
             lastEditWasDelete = true
         }
+        // Right arrow out of the click-to-copy selection: cursor to the end with
+        // the trailing "/" added, so it carries on exactly like Tab-into-the-FAB.
+        if commandSelector == #selector(NSResponder.moveRight(_:)), slashOnRightArrow {
+            slashOnRightArrow = false
+            let length = (textView.string as NSString).length
+            if textView.selectedRange() == NSRange(location: 0, length: length) {
+                if !textView.string.hasSuffix("/") {
+                    textView.replaceCharacters(in: NSRange(location: length, length: 0), with: "/")
+                }
+                textView.setSelectedRange(NSRange(location: (textView.string as NSString).length, length: 0))
+                updateTerminalButton()
+                return true
+            }
+        }
+        if commandSelector != #selector(NSResponder.moveRight(_:)) { slashOnRightArrow = false }
         // Tab reaches here only when no completion is consuming it (nothing left to
         // resolve) — so it advances to the next pane instead of re-descending.
         if commandSelector == #selector(NSResponder.insertTab(_:)) {
@@ -660,7 +679,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         // Breadcrumb: a segment click jumps to that ancestor; a click on the bar's
         // empty area switches to the editable field (Explorer-style).
         pathBar.onSegment = { [weak self] url in self?.navigate(to: url) }
-        pathBar.onActivateEdit = { [weak self] in self?.beginAddressEditing() }
+        pathBar.onActivateEdit = { [weak self] in self?.beginAddressEditing(selectingAll: true) }
         pathBar.onFolderCommand = { [weak self] command, url in
             self?.handleFolderCommand(command, url: url)
         }
@@ -768,15 +787,22 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// Enter edit mode: reveal the field with the full real path, a trailing "/"
     /// appended and the cursor placed after it — so you can immediately keep
     /// typing the next segment, just like descending with the FAB.
-    private func beginAddressEditing() {
+    ///
+    /// `selectingAll` (a click on the breadcrumb) instead shows the bare path
+    /// fully selected, ready for ⌘C; Right arrow then switches to the typing
+    /// state above (cursor at the end, "/" appended), Left arrow to the start.
+    private func beginAddressEditing(selectingAll: Bool = false) {
         setEditing(true)
         let base = contents.folder.map(addressString(for:)) ?? addressField.stringValue
-        let text = base.hasSuffix("/") ? base : base + "/"
+        let text = selectingAll || base.hasSuffix("/") ? base : base + "/"
         addressField.stringValue = text
         updateTerminalButton()
         view.window?.makeFirstResponder(addressField)
-        addressField.currentEditor()?.selectedRange =
-            NSRange(location: (text as NSString).length, length: 0)
+        let length = (text as NSString).length
+        addressField.currentEditor()?.selectedRange = selectingAll
+            ? NSRange(location: 0, length: length)
+            : NSRange(location: length, length: 0)
+        slashOnRightArrow = selectingAll
     }
 
     // MARK: - Layout

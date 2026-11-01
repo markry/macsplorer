@@ -22,14 +22,13 @@ extension FolderContents {
 
     /// Paste into a folder that isn't the one on screen — the right-click "Paste
     /// into …" on a folder row, and the same entry in the tree and Favorites. The
-    /// pane follows the files in, as a drop onto a folder does, so the result is
-    /// visible rather than landing somewhere the user can't see.
+    /// pane stays where it is, as it does for a drop onto a folder row.
     func pasteInto(_ directory: URL) {
         guard accepts(itemsInto: directory) else { NSSound.beep(); return }
         let (urls, move) = Clipboard.shared.pasteSource()
         Diag.commands.info("paste into folder: urls=\(urls.count) move=\(move)")
         guard !urls.isEmpty else { return }
-        performTransfer(urls, into: directory, move: move, selectLanded: true)
+        performTransfer(urls, into: directory, move: move, selectLanded: samePath(directory, folder))
         if move { Clipboard.shared.clearAfterMove() }
     }
 
@@ -578,19 +577,7 @@ extension FolderContents {
             }
         }
         finishMutation(affected: affected, selecting: selectLanded ? landed : [])
-        if !selectLanded { followInto(destination, selecting: landed) }
         if let failure { reportTransferFailure(failure.name, error: failure.error, moving: move) }
-    }
-
-    /// Open the folder files were just copied into, and select them there.
-    ///
-    /// Dropping onto a folder row puts the files somewhere the user isn't looking, with
-    /// no sign anything happened — worse on a remote provider, where the "folder" is
-    /// just a shared prefix and there's nothing to reassure them it arrived.
-    private func followInto(_ destination: URL, selecting landed: [String]) {
-        guard !landed.isEmpty, !samePath(destination, folder) else { return }
-        selectAfterLoad(landed)
-        onOpenFolder?(destination)
     }
 
     /// Copy files out of a remote provider into a local folder by downloading them —
@@ -648,7 +635,6 @@ extension FolderContents {
 
             self.emitStatus()
             self.finishMutation(affected: [destination], selecting: selectLanded ? landed : [])
-            if !selectLanded { self.followInto(destination, selecting: landed) }
             if let failure {
                 self.reportTransferFailure(failure.name, error: failure.error, moving: false)
             }
@@ -778,7 +764,6 @@ extension FolderContents {
             self.onBackgroundWorkEnded?()
             self.emitStatus()
             self.finishMutation(affected: affected, selecting: selectLanded ? landed : [])
-            if !selectLanded { self.followInto(destination, selecting: landed) }
             if let failure {
                 self.reportTransferFailure(failure.name, error: failure.error, moving: move)
             }
