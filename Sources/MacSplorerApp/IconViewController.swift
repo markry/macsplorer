@@ -181,9 +181,8 @@ extension IconViewController: NSCollectionViewDataSource, NSCollectionViewDelega
                         proposedIndexPath proposedDropIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
                         dropOperation proposedDropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
         proposedDropOperation.pointee = .before
-        let operation = contents.dragOperation(for: draggingInfo)
-        if operation != [] { return operation }
-        return contents.promiseReceivers(from: draggingInfo).isEmpty ? [] : .copy
+        guard let folder = contents.folder else { return [] }
+        return contents.dropOperation(for: draggingInfo, into: folder)
     }
 
     func collectionView(_ collectionView: NSCollectionView, acceptDrop draggingInfo: NSDraggingInfo,
@@ -199,7 +198,7 @@ extension IconViewController: NSCollectionViewDataSource, NSCollectionViewDelega
                 }
                 return true
             }
-            let move = contents.dragOperation(for: draggingInfo) == .move
+            let move = contents.dragOperation(for: draggingInfo, into: folder) == .move
             DispatchQueue.main.async { [weak self] in
                 self?.contents.performTransfer(urls, into: folder, move: move, selectLanded: true)
             }
@@ -209,8 +208,9 @@ extension IconViewController: NSCollectionViewDataSource, NSCollectionViewDelega
         // download them here rather than round-tripping through a file promise.
         let providerURLs = RemoteFilePromise.providerURLs(on: draggingInfo.draggingPasteboard)
         if !providerURLs.isEmpty {
+            let move = contents.dragOperation(for: draggingInfo, into: folder) == .move
             DispatchQueue.main.async { [weak self] in
-                self?.contents.performTransfer(providerURLs, into: folder, move: false, selectLanded: true)
+                self?.contents.performTransfer(providerURLs, into: folder, move: move, selectLanded: true)
             }
             return true
         }

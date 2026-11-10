@@ -80,7 +80,9 @@ final class Clipboard {
         // A promise isn't enough for every target — the Finder leaves Paste greyed
         // out until something pasteable exists — so fetch anything not already local
         // and re-offer it as a real file once it lands.
-        let pending = urls.filter { !$0.isFileURL }
+        // Folders stay promises: the cache holds single files, and fetching a whole
+        // folder just in case it's pasted somewhere could be enormous.
+        let pending = urls.filter { !$0.isFileURL && !$0.hasDirectoryPath }
         if fetchRemote && !pending.isEmpty { materialize(pending) }
         NotificationCenter.default.post(name: Self.didChange, object: nil)
     }

@@ -29,6 +29,11 @@ public protocol FileSystemProvider {
     /// A single item's metadata — the metadata chokepoint.
     func metadata(for url: URL) async throws -> FSItem
 
+    /// Extra label/value rows for Get Info, after the standard ones: what this
+    /// backend knows that a local disk doesn't (a version, who changed it, how it's
+    /// shared). Default: none.
+    func infoRows(for url: URL) async throws -> [(label: String, value: String)]
+
     /// Whether `directory` contains at least one non-package subfolder (drives the
     /// tree's disclosure triangle). Best-effort: failures resolve to `false`.
     func hasChildFolders(at directory: URL, includeHidden: Bool) async -> Bool
@@ -69,6 +74,20 @@ public protocol FileSystemProvider {
                             progress: ProviderProgress?) async throws -> URL
 
     func canCopyDirectly(_ source: URL, to destination: URL) async -> Bool
+
+    /// Whether this backend can move `source` to exactly `destination` itself (a
+    /// server-side move or rename), rather than the app copying and then deleting.
+    /// Also what decides a plain drag: between two locations this answers yes for,
+    /// a drag moves, as Finder moves within one disk; otherwise it copies.
+    ///
+    /// Synchronous because a drag asks it on every mouse movement: answer from the
+    /// URLs alone (same account, same bucket), never over the network.
+    func canMoveDirectly(_ source: URL, to destination: URL) -> Bool
+
+    /// Move `source` to exactly `destination` within this backend. Only called when
+    /// `canMoveDirectly` said yes, after any Keep Both or Replace choice. Must leave
+    /// the source intact if it fails.
+    func moveDirectly(_ source: URL, to destination: URL, progress: ProviderProgress?) async throws
 
     /// Copy `source` to the exact `destination` within this backend, server-side.
     /// Advances `progress` by bytes as parts complete and stops between parts when
@@ -153,6 +172,14 @@ public extension FileSystemProvider {
     }
 
     func canCopyDirectly(_ source: URL, to destination: URL) async -> Bool { false }
+
+    func canMoveDirectly(_ source: URL, to destination: URL) -> Bool { false }
+
+    func infoRows(for url: URL) async throws -> [(label: String, value: String)] { [] }
+
+    func moveDirectly(_ source: URL, to destination: URL, progress: ProviderProgress?) async throws {
+        throw ProviderError.uploadUnsupported(destination)
+    }
 
     func copyDirectly(_ source: URL, to destination: URL, progress: ProviderProgress?) async throws {
         throw ProviderError.uploadUnsupported(destination)

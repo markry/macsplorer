@@ -251,8 +251,8 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// real S3 URI `s3://bucket/key` at bucket level or deeper (a genuine URI AWS
     /// tools accept); `/Volumes/profile` at the profile level, where no S3 URI
     /// exists yet. (The breadcrumb chips, shown when not editing, are separate.)
-    private func addressString(for url: URL) -> String {
-        guard !isLocal(url) else { return url.path }
+    static func addressString(for url: URL) -> String {
+        guard !(url.isFileURL || url.scheme == nil) else { return url.path }
         if RecentsProvider.isRecents(url) { return "Recents" }
         // Other registered providers: the URL itself, unescaped for reading.
         guard url.scheme == S3Location.scheme else {
@@ -289,7 +289,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     private func showFolder(_ url: URL) {
         guard locationKey(contents.folder) != locationKey(url) else { return }
         contents.show(folder: url)
-        addressField.stringValue = addressString(for: url)
+        addressField.stringValue = Self.addressString(for: url)
         pathBar.setURL(url)
         updateTerminalButton()
         onTitleChange?(locationTitle(for: url))
@@ -386,7 +386,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         // word — has to lead back there rather than fail as a path.
         if entered.caseInsensitiveCompare("Recents") == .orderedSame {
             navigate(to: RecentsProvider.url)
-            setAddress(addressString(for: RecentsProvider.url), cursorAtEnd: true)
+            setAddress(Self.addressString(for: RecentsProvider.url), cursorAtEnd: true)
             return
         }
         // A real S3 URI (s3://bucket/key): reattach the active profile → the internal
@@ -397,27 +397,27 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
                 NSSound.beep(); return
             }
             navigate(to: url)
-            setAddress(addressString(for: url), cursorAtEnd: true)
+            setAddress(Self.addressString(for: url), cursorAtEnd: true)
             return
         }
         // Any other registered provider's scheme://host/path. Built via components so
         // typed spaces and other unescaped characters are encoded, not rejected.
         if let url = registeredProviderURL(from: entered) {
             navigate(to: url)
-            setAddress(addressString(for: url), cursorAtEnd: true)
+            setAddress(Self.addressString(for: url), cursorAtEnd: true)
             return
         }
         // /Volumes/<profile> for a connected S3 profile → that profile's S3 root.
         if let profile = s3ProfileFromVolumesPath(entered) {
             let url = S3Location.url(profile: profile)
             navigate(to: url)
-            setAddress(addressString(for: url), cursorAtEnd: true)
+            setAddress(Self.addressString(for: url), cursorAtEnd: true)
             return
         }
         // /Volumes/<name> for a provider mount → the mount's root.
         if let mount = ProviderMounts.mount(forVolumesPath: entered) {
             navigate(to: mount.url)
-            setAddress(addressString(for: mount.url), cursorAtEnd: true)
+            setAddress(Self.addressString(for: mount.url), cursorAtEnd: true)
             return
         }
         let raw = (addressField.stringValue as NSString).expandingTildeInPath
@@ -793,7 +793,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     /// state above (cursor at the end, "/" appended), Left arrow to the start.
     private func beginAddressEditing(selectingAll: Bool = false) {
         setEditing(true)
-        let base = contents.folder.map(addressString(for:)) ?? addressField.stringValue
+        let base = contents.folder.map(Self.addressString(for:)) ?? addressField.stringValue
         let text = selectingAll || base.hasSuffix("/") ? base : base + "/"
         addressField.stringValue = text
         updateTerminalButton()

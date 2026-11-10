@@ -70,12 +70,24 @@ public final class S3Provider: FileSystemProvider {
         case .profile(let profile):
             return FSItem(providerURL: url, name: profile, isDirectory: true,
                           byteSize: nil, modificationDate: nil, typeDescription: "AWS Profile")
-        case .prefix(_, let bucket, let key):
-            // A bucket or prefix node; both are directories in the UI.
+        case .prefix(let profile, let bucket, let key):
             let name = key.isEmpty ? bucket
                                    : String(key.split(separator: "/").last ?? Substring(bucket))
+            // A file: ask S3 for its size and date.
+            if !key.isEmpty && !key.hasSuffix("/") && !url.hasDirectoryPath {
+                let client = try await S3ClientPool.shared.clientForBucket(profile: profile, bucket: bucket)
+                do {
+                    let head = try await client.headObject(input: HeadObjectInput(bucket: bucket, key: key))
+                    return FSItem(providerURL: url, name: name, isDirectory: false,
+                                  byteSize: head.contentLength, modificationDate: head.lastModified)
+                } catch {
+                    throw Self.clarify(error, listing: "“\(name)”", profile: profile)
+                }
+            }
+            // A bucket or prefix node; both are directories in the UI.
             return FSItem(providerURL: url, name: name, isDirectory: true,
-                          byteSize: nil, modificationDate: nil)
+                          byteSize: nil, modificationDate: nil,
+                          typeDescription: key.isEmpty ? "S3 Bucket" : nil)
         }
     }
 

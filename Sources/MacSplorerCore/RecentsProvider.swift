@@ -47,13 +47,18 @@ public final class RecentsProvider: FileSystemProvider {
         guard Self.isRecents(directory) else { return [] }
         let since = Calendar.current.date(byAdding: .day, value: -Self.windowDays, to: Date()) ?? Date()
         let query = Self.queryString(since: since)
-        let items = await Task.detached(priority: .userInitiated) {
+        let items = try await Self.gate.run(timeout: Self.timeout) {
             Self.items(at: Self.search(query), includeHidden: includeHidden)
-        }.value
+        }
         // Keep the most recent when trimming to the limit; the pane sorts for display.
         let newestFirst = items.sorted { ($0.lastOpenedDate ?? .distantPast) > ($1.lastOpenedDate ?? .distantPast) }
         return Array(newestFirst.prefix(Self.limit))
     }
+
+    /// How long a listing waits for Spotlight before giving up with an error.
+    static let timeout: TimeInterval = 15
+
+    private static let gate = BlockingGate<[FSItem]>(label: "net.ryland.macsplorer.recents")
 
     /// Read each result's metadata, in parallel. Most recent files live in cloud
     /// folders, where every metadata read goes through the File Provider; one at a
@@ -121,9 +126,66 @@ public final class RecentsProvider: FileSystemProvider {
 
 public enum RecentsError: LocalizedError {
     case cannotHold
+    case spotlightNotResponding
 
     public var errorDescription: String? {
-        "Recents shows files where they already are, so nothing can be put into it. "
-            + "Use Show in Enclosing Folder to work in a file’s own folder."
+        switch self {
+        case .cannotHold:
+            return "Recents shows files where they already are, so nothing can be put into it. "
+                + "Use Show in Enclosing Folder to work in a file’s own folder."
+        case .spotlightNotResponding:
+            return "Spotlight isn’t responding, so Recents can’t be listed right now. "
+                + "Try again in a moment."
+        }
+    }
+}
+
+/// Runs blocking work (a synchronous Spotlight query, file-metadata reads that can
+/// stall in the File Provider) on a thread of its own, one job at a time.
+///
+/// Swift's async tasks share a small pool of threads, one per core. Blocking work
+/// done there holds a thread for as long as it blocks, and when Spotlight stopped
+/// answering, each Recents refresh pinned another one until none were left — and
+/// with them every folder listing in the app stalled. Here the blocking happens
+/// on a private queue instead; callers that arrive while a job is running share
+/// its result rather than starting another; and each caller stops waiting after
+/// `timeout`, with an error, even if the job itself never returns.
+final class BlockingGate<Value>: @unchecked Sendable {
+    private let queue: DispatchQueue
+    private let lock = NSLock()
+    private var waiters: [UUID: CheckedContinuation<Value, Error>] = [:]
+    private var running = false
+
+    init(label: String) {
+        queue = DispatchQueue(label: label, qos: .userInitiated)
+    }
+
+    func run(timeout: TimeInterval, _ work: @escaping @Sendable () -> Value) async throws -> Value {
+        let id = UUID()
+        return try await withCheckedThrowingContinuation { continuation in
+            lock.lock()
+            waiters[id] = continuation
+            let start = !running
+            running = true
+            lock.unlock()
+
+            if start {
+                queue.async { [self] in
+                    let value = work()
+                    lock.lock()
+                    let ready = waiters
+                    waiters = [:]
+                    running = false
+                    lock.unlock()
+                    for waiter in ready.values { waiter.resume(returning: value) }
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [self] in
+                lock.lock()
+                let expired = waiters.removeValue(forKey: id)
+                lock.unlock()
+                expired?.resume(throwing: RecentsError.spotlightNotResponding)
+            }
+        }
     }
 }

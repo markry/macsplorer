@@ -154,18 +154,19 @@ final class RemoteFilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate {
         return q
     }()
 
-    /// A promise for a remote file, or nil for anything that can't be handed over
-    /// this way (folders, which would need a recursive download).
+    /// A promise for a remote file or folder. A folder is fetched whole, with
+    /// everything beneath it, only if the drop is accepted.
     static func promiseProvider(for item: FSItem) -> RemoteFilePromise? {
-        guard !item.isDirectory else { return nil }
-        return promiseProvider(url: item.url, name: item.name)
+        promiseProvider(url: item.url, name: item.name)
     }
 
     /// The same, for callers holding a URL rather than a listed item — copying to the
     /// clipboard, where the paste may land in another app.
     static func promiseProvider(url: URL, name: String) -> RemoteFilePromise? {
         guard !url.isFileURL else { return nil }
-        let type = UTType(filenameExtension: (name as NSString).pathExtension) ?? .data
+        let type = url.hasDirectoryPath
+            ? UTType.folder
+            : UTType(filenameExtension: (name as NSString).pathExtension) ?? .data
         let provider = RemoteFilePromise(fileType: type.identifier, delegate: shared)
         provider.providerURL = url
         provider.userInfo = [Key.url: url, Key.name: name]
@@ -193,6 +194,12 @@ final class RemoteFilePromiseDelegate: NSObject, NSFilePromiseProviderDelegate {
         }
         Task { @MainActor in
             do {
+                if source.hasDirectoryPath {
+                    try await RemoteFolder.download(source, to: url,
+                                                    provider: Providers.provider(for: source))
+                    completionHandler(nil)
+                    return
+                }
                 // Reuse the session copy when there is one, so dragging a file you
                 // just opened doesn't fetch it twice.
                 let local = try await RemoteFileCache.shared.localFile(for: source)

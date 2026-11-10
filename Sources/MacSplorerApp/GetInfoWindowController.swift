@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import MacSplorerCore
 
 /// A simple horizontal used/free capacity bar (used portion filled, remainder
@@ -48,6 +49,8 @@ private final class CapacityBarView: NSView {
 ///               (reusing FolderSizeScanner) to fill in the total size.
 ///   - File    → size on disk.
 /// Plus the common name / kind / location / created / modified for all three.
+/// A remote item (S3, or any other provider) gets the same panel, filled in from
+/// its provider as the answers arrive.
 final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
     private let url: URL
     /// Fired when this window closes, so the owner can release it.
@@ -57,6 +60,9 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
     private var sizeValueLabel: NSTextField?
     private var itemsValueLabel: NSTextField?
     private var calcButton: NSButton?
+    /// Remote items: the metadata fetch, and a running Total Size walk.
+    private var remoteTask: Task<Void, Never>?
+    private var sizeTask: Task<Void, Never>?
 
     private static let keys: Set<URLResourceKey> = [
         .localizedNameKey, .localizedTypeDescriptionKey,
@@ -79,7 +85,11 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self
-        buildLayout()
+        if url.isFileURL || url.scheme == nil {
+            buildLayout()
+        } else {
+            buildRemoteLayout()
+        }
         window.center()
     }
 
@@ -88,6 +98,8 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         scanner?.cancel()
+        remoteTask?.cancel()
+        sizeTask?.cancel()
         onClose?()
     }
 
@@ -150,6 +162,11 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
             addRow(grid, "Modified:", valueLabel(FSFormat.date(modified)))
         }
 
+        install(header: header, grid: grid, icon: icon)
+    }
+
+    /// Lay out the header and detail grid in the window.
+    private func install(header: NSView, grid: NSGridView, icon: NSImageView) {
         let content = NSStackView(views: [header, NSBox.separator, grid])
         content.orientation = .vertical
         content.alignment = .leading
@@ -167,6 +184,109 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
             content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
+    }
+
+    // MARK: - Remote items
+
+    /// The panel for a remote item: name and location straight away, the rest from
+    /// the provider once it answers.
+    private func buildRemoteLayout() {
+        let isFolder = url.hasDirectoryPath
+        let icon = NSImageView()
+        icon.image = isFolder
+            ? NSWorkspace.shared.icon(for: .folder)
+            : NSWorkspace.shared.icon(for: UTType(filenameExtension: url.pathExtension) ?? .data)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let name = NSTextField(labelWithString: url.lastPathComponent)
+        name.font = .boldSystemFont(ofSize: 15)
+        name.lineBreakMode = .byTruncatingMiddle
+        let kind = NSTextField(labelWithString: "Loading…")
+        kind.font = .systemFont(ofSize: 11)
+        kind.textColor = .secondaryLabelColor
+
+        let titleStack = NSStackView(views: [name, kind])
+        titleStack.orientation = .vertical
+        titleStack.alignment = .leading
+        titleStack.spacing = 1
+        let header = NSStackView(views: [icon, titleStack])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 10
+
+        let grid = NSGridView(numberOfColumns: 2, rows: 0)
+        grid.rowSpacing = 6
+        grid.columnSpacing = 10
+        grid.column(at: 0).xPlacement = .trailing
+        let parent = BrowserPaneController.addressString(for: url.deletingLastPathComponent())
+        let whereLabel = valueLabel(parent)
+        whereLabel.lineBreakMode = .byTruncatingMiddle
+        whereLabel.toolTip = parent
+        whereLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
+        addRow(grid, "Where:", whereLabel)
+        install(header: header, grid: grid, icon: icon)
+
+        let url = url
+        let provider = Providers.provider(for: url)
+        remoteTask = Task { @MainActor [weak self] in
+            do {
+                let item = try await provider.metadata(for: url)
+                guard let self, !Task.isCancelled else { return }
+                kind.stringValue = item.typeDescription ?? (item.isDirectory ? "Folder" : "Document")
+                if item.isDirectory {
+                    let items = self.valueLabel("Counting…")
+                    self.addRow(grid, "Items:", items)
+                    self.addFolderSizeRow(to: grid)
+                    self.addDateRows(to: grid, created: item.creationDate, modified: item.modificationDate)
+                    let children = try await provider.children(
+                        of: url, includeHidden: Preferences.shared.showHiddenFiles)
+                    items.stringValue = children.count == 1 ? "1 item" : "\(children.count) items"
+                } else {
+                    self.addRow(grid, "Size:", self.valueLabel(item.byteSize.map { FSFormat.size(Int64($0)) } ?? "—"))
+                    self.addDateRows(to: grid, created: item.creationDate, modified: item.modificationDate)
+                }
+                for row in try await provider.infoRows(for: url) {
+                    guard !Task.isCancelled else { return }
+                    let value = self.valueLabel(row.value)
+                    value.lineBreakMode = .byTruncatingMiddle
+                    value.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
+                    self.addRow(grid, row.label + ":", value)
+                }
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                if kind.stringValue == "Loading…" { kind.stringValue = "Couldn’t get information" }
+                let message = self.valueLabel(error.localizedDescription)
+                message.textColor = .secondaryLabelColor
+                message.lineBreakMode = .byWordWrapping
+                message.preferredMaxLayoutWidth = 240
+                self.addRow(grid, "Error:", message)
+            }
+        }
+    }
+
+    private func addDateRows(to grid: NSGridView, created: Date?, modified: Date?) {
+        if let created { addRow(grid, "Created:", valueLabel(FSFormat.date(created))) }
+        if let modified { addRow(grid, "Modified:", valueLabel(FSFormat.date(modified))) }
+    }
+
+    /// Total Size for a remote folder: walk it through the provider.
+    private func calculateRemote() {
+        let url = url
+        let provider = Providers.provider(for: url)
+        sizeTask = Task { @MainActor [weak self] in
+            do {
+                let total = try await RemoteFolder.totalSize(of: url, provider: provider)
+                guard let self, !Task.isCancelled else { return }
+                let files = total.files == 1 ? "1 file" : "\(total.files) files"
+                self.sizeValueLabel?.stringValue = "\(FSFormat.size(total.bytes)) in \(files)"
+                self.calcButton?.isHidden = true
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                self.sizeValueLabel?.stringValue = "Couldn’t calculate"
+                self.sizeValueLabel?.toolTip = error.localizedDescription
+                self.calcButton?.isHidden = true
+            }
+        }
     }
 
     private func addVolumeRows(to grid: NSGridView, values: URLResourceValues?) {
@@ -207,6 +327,7 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
     @objc private func calculate() {
         calcButton?.isEnabled = false
         calcButton?.title = "Calculating…"
+        guard url.isFileURL || url.scheme == nil else { calculateRemote(); return }
         let scanner = FolderSizeScanner()
         self.scanner = scanner
         // Don't skip cloud mounts for an explicit, single-folder Get Info — the

@@ -474,24 +474,29 @@ extension FolderContents {
 extension FolderContents {
     private enum CollisionChoice { case keepBoth, replace, stop }
 
-    /// Move by default; copy when ⌥ is held (or when move isn't offered).
-    func dragOperation(for info: NSDraggingInfo) -> NSDragOperation {
+    /// What a plain drag onto `destination` does, as Finder decides for disks: it
+    /// moves within one place (the same volume, or a remote location whose provider
+    /// can move there itself) and copies anywhere else. ⌥ always copies.
+    func dragOperation(for info: NSDraggingInfo, into destination: URL) -> NSDragOperation {
         let allowed = info.draggingSourceOperationMask
-        if NSEvent.modifierFlags.contains(.option) { return allowed.contains(.copy) ? .copy : [] }
-        if allowed.contains(.move) { return .move }
-        return allowed.contains(.copy) ? .copy : []
+        let copy: NSDragOperation = allowed.contains(.copy) ? .copy : []
+        if NSEvent.modifierFlags.contains(.option) || !allowed.contains(.move) { return copy }
+        let files = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        let sources = files + RemoteFilePromise.providerURLs(on: info.draggingPasteboard)
+        guard !sources.isEmpty, sources.allSatisfy({ plainDragMoves($0, into: destination) }) else {
+            return copy
+        }
+        return .move
     }
 
-    /// Whether a drop of our own remote items moves them, as Finder decides for
-    /// disks: within the same place (one S3 bucket under one profile) a plain drag
-    /// moves; anywhere else it copies; Option always copies.
-    func remoteDropMoves(_ sources: [URL], into destination: URL) -> Bool {
-        if NSEvent.modifierFlags.contains(.option) { return false }
-        guard case .prefix(let profile, let bucket, _) = S3Location.parse(destination) else { return false }
-        return sources.allSatisfy {
-            if case .prefix(let p, let b, _) = S3Location.parse($0) { return p == profile && b == bucket }
-            return false
-        }
+    private func plainDragMoves(_ source: URL, into destination: URL) -> Bool {
+        let isLocal = { (url: URL) in url.isFileURL || url.scheme == nil }
+        if isLocal(source) && isLocal(destination) { return sameVolume(source, as: destination) }
+        if isLocal(source) || isLocal(destination) { return false }
+        let placed = destination.appendingPathComponent(source.lastPathComponent,
+                                                        isDirectory: source.hasDirectoryPath)
+        return Providers.provider(for: destination).canMoveDirectly(source, to: placed)
     }
 
     func isSelfOrDescendant(_ url: URL, of directory: URL) -> Bool {
@@ -580,8 +585,8 @@ extension FolderContents {
         if let failure { reportTransferFailure(failure.name, error: failure.error, moving: move) }
     }
 
-    /// Copy files out of a remote provider into a local folder by downloading them —
-    /// the cross-provider half of a copy or a drag.
+    /// Copy files and folders out of a remote provider into a local folder by
+    /// downloading them — the cross-provider half of a copy or a drag.
     ///
     /// Always a copy: removing the original would mean deleting it on the server,
     /// which nothing here is allowed to do yet, so a "move" degrades to a copy and
@@ -624,8 +629,14 @@ extension FolderContents {
 
                 self.onStatus?("Downloading “\(name)”…")
                 do {
-                    if url.hasDirectoryPath { throw TransferRefusal.remoteFolder(name) }
-                    try await Providers.provider(for: url).download(url, to: target)
+                    let provider = Providers.provider(for: url)
+                    if url.hasDirectoryPath {
+                        try await RemoteFolder.download(url, to: target, provider: provider) { relative in
+                            await MainActor.run { self.onStatus?("Downloading “\(name)/\(relative)”…") }
+                        }
+                    } else {
+                        try await provider.download(url, to: target)
+                    }
                     landed.append(target.lastPathComponent)
                 } catch {
                     NSSound.beep()
@@ -643,12 +654,14 @@ extension FolderContents {
 
     /// Copy or move items into a remote location (an S3 prefix, say).
     ///
-    /// When the destination's backend can copy the source itself — S3 to S3 under
-    /// one profile — it does, server-side: no bytes pass through this Mac, and a
-    /// move then deletes the original once the copy has landed. Otherwise each
-    /// source is downloaded to a scratch folder (if remote) and uploaded, so any
-    /// backend that can download can copy into any backend that can upload; such a
-    /// cross-backend "move" leaves the original alone.
+    /// A move the destination's backend can do itself (`moveDirectly`) goes to it
+    /// whole. Otherwise, when the backend can copy the source itself — S3 to S3
+    /// under one profile — it does, server-side: no bytes pass through this Mac.
+    /// Failing that, each source is downloaded to a scratch folder (if remote) and
+    /// uploaded, so any backend that can download can copy into any backend that
+    /// can upload. A remote folder goes file by file the same way, each file
+    /// server-side when it can be. Whichever way, a move removes the original only
+    /// once everything has landed.
     ///
     /// Progress and Stop go through the pane's status bar, as remote deletes do.
     private func uploadTransfer(_ urls: [URL], into destination: URL, move: Bool,
@@ -680,13 +693,15 @@ extension FolderContents {
                 if self.samePath(source.deletingLastPathComponent(), destination)
                     || self.isSelfOrDescendant(source, of: destination) { continue }
                 do {
-                    let direct = await target.canCopyDirectly(
+                    let remoteFolder = !(source.isFileURL || source.scheme == nil) && source.hasDirectoryPath
+                    let native = move && target.canMoveDirectly(
+                        source, to: destination.appendingPathComponent(name, isDirectory: source.hasDirectoryPath))
+                    let direct = (remoteFolder || native) ? false : await target.canCopyDirectly(
                         source, to: destination.appendingPathComponent(name))
                     Diag.transfer.info("transfer: direct=\(direct, privacy: .public) move=\(move, privacy: .public)")
                     // Something local to send: the source itself, or a download of it.
                     var local = source
-                    if !direct && !(source.isFileURL || source.scheme == nil) {
-                        if source.hasDirectoryPath { throw TransferRefusal.remoteFolder(name) }
+                    if !direct && !remoteFolder && !native && !(source.isFileURL || source.scheme == nil) {
                         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
                         local = scratch.appendingPathComponent(name)
                         progress.advance(items: 0, detail: "downloading “\(name)”")
@@ -695,8 +710,8 @@ extension FolderContents {
                         try await download.value
                     }
 
-                    var isFolder = false
-                    if !direct {
+                    var isFolder = remoteFolder || (native && source.hasDirectoryPath)
+                    if !direct && !remoteFolder && !native {
                         var isDirectory: ObjCBool = false
                         FileManager.default.fileExists(atPath: local.path, isDirectory: &isDirectory)
                         isFolder = isDirectory.boolValue
@@ -724,7 +739,25 @@ extension FolderContents {
                         // and must leave the original intact if that fails.
                     }
 
-                    if direct {
+                    if native {
+                        progress.advance(items: 0, detail: "“\(name)”")
+                        let relocation = Task { try await target.moveDirectly(source, to: placed, progress: progress) }
+                        work = relocation
+                        try await relocation.value
+                        affected.insert(source.deletingLastPathComponent())
+                    } else if remoteFolder {
+                        let copy = Task {
+                            try await self.copyRemoteFolder(source, to: placed, provider: target,
+                                                            scratch: scratch, progress: progress)
+                        }
+                        work = copy
+                        try await copy.value
+                        if move {
+                            try await Providers.provider(for: source).deletePermanently(source, progress: nil)
+                            affected.insert(source.deletingLastPathComponent())
+                        }
+                        progress.advance(items: 1, detail: "“\(name)”")
+                    } else if direct {
                         progress.advance(items: 0, detail: "“\(name)”")
                         let copy = Task { try await target.copyDirectly(source, to: placed, progress: progress) }
                         work = copy
@@ -746,6 +779,18 @@ extension FolderContents {
                         }
                         work = upload
                         try await upload.value
+                        // A move the user asked for (Cut and Paste, Move Here) removes the
+                        // original once the upload has landed: to the Trash when it's
+                        // local, so a mistake can be undone.
+                        if move {
+                            let origin = Providers.provider(for: source)
+                            if source.isFileURL || source.scheme == nil {
+                                try origin.moveToTrash(source)
+                            } else {
+                                try await origin.deletePermanently(source, progress: nil)
+                            }
+                            affected.insert(source.deletingLastPathComponent())
+                        }
                         progress.advance(items: 1, detail: "“\(name)”")
                     }
                     landed.append(placed.lastPathComponent)
@@ -766,6 +811,39 @@ extension FolderContents {
             self.finishMutation(affected: affected, selecting: selectLanded ? landed : [])
             if let failure {
                 self.reportTransferFailure(failure.name, error: failure.error, moving: move)
+            }
+        }
+    }
+
+    /// Copy a remote folder's files beneath `destination`, keeping its structure: each
+    /// one server-side when the destination's backend can, otherwise downloaded to
+    /// `scratch` and uploaded. Empty folders are created too, so a move that deletes
+    /// the original afterwards can't lose them.
+    private func copyRemoteFolder(_ folder: URL, to destination: URL, provider: FileSystemProvider,
+                                  scratch: URL, progress: ProviderProgress) async throws {
+        let source = Providers.provider(for: folder)
+        let listing = try await RemoteFolder.contents(of: folder, provider: source)
+        for relative in listing.emptyFolders {
+            let empty = relative.isEmpty
+                ? destination
+                : RemoteFolder.url(relative + "/", beneath: destination)
+            _ = try await provider.createFolder(in: empty.deletingLastPathComponent(),
+                                                named: empty.lastPathComponent)
+        }
+        for (file, relative) in listing.files {
+            try Task.checkCancellation()
+            let placed = RemoteFolder.url(relative, beneath: destination)
+            progress.advance(items: 0, detail: "“\(relative)”")
+            if await provider.canCopyDirectly(file, to: placed) {
+                try await provider.copyDirectly(file, to: placed, progress: nil)
+            } else {
+                let local = scratch.appendingPathComponent(UUID().uuidString, isDirectory: true)
+                    .appendingPathComponent(file.lastPathComponent)
+                try FileManager.default.createDirectory(at: local.deletingLastPathComponent(),
+                                                        withIntermediateDirectories: true)
+                defer { try? FileManager.default.removeItem(at: local.deletingLastPathComponent()) }
+                try await source.download(file, to: local)
+                try await provider.upload(local, to: placed)
             }
         }
     }
@@ -860,13 +938,10 @@ extension FolderContents {
 
 /// A transfer the app declines itself, before asking any provider.
 private enum TransferRefusal: LocalizedError {
-    case remoteFolder(String)
     case sourceMissing
 
     var errorDescription: String? {
         switch self {
-        case .remoteFolder(let name):
-            return "“\(name)” is a folder. Copying folders out of a remote location isn’t supported yet."
         case .sourceMissing:
             return "The item no longer exists where it was copied from — it was probably "
                  + "already moved. Nothing at the destination was changed."
@@ -901,7 +976,7 @@ extension FolderContents {
                 }
                 return true
             }
-            let move = dragOperation(for: info) == .move
+            let move = dragOperation(for: info, into: destination) == .move
             let selectLanded = samePath(destination, folder)
             DispatchQueue.main.async { [weak self] in
                 self?.performTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
@@ -911,7 +986,7 @@ extension FolderContents {
         let providerURLs = RemoteFilePromise.providerURLs(on: info.draggingPasteboard)
         if !providerURLs.isEmpty {
             let selectLanded = samePath(destination, folder)
-            let move = remoteDropMoves(providerURLs, into: destination)
+            let move = dragOperation(for: info, into: destination) == .move
             Diag.transfer.info("drop: \(providerURLs.count, privacy: .public) remote item(s), move=\(move, privacy: .public)")
             DispatchQueue.main.async { [weak self] in
                 self?.performTransfer(providerURLs, into: destination, move: move,
@@ -929,7 +1004,7 @@ extension FolderContents {
     func dropOperation(for info: NSDraggingInfo, into destination: URL) -> NSDragOperation {
         // No highlight at all over Recents: there's nowhere for the files to go.
         guard accepts(itemsInto: destination) else { return [] }
-        let operation = dragOperation(for: info)
+        let operation = dragOperation(for: info, into: destination)
         if operation != [] { return operation }
         return promiseReceivers(from: info).isEmpty ? [] : .copy
     }

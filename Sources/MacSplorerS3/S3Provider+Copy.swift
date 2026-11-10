@@ -185,11 +185,50 @@ extension S3Provider {
     }
 }
 
-// MARK: - Rename (files and folders with contents)
+// MARK: - Rename and move (files and folders with contents)
 
 extension S3Provider {
-    /// Rename a file, or a folder with contents. S3 has no rename, so it's a
-    /// server-side copy of everything to the new name, then a delete of the
+    /// Rename a file, or a folder with contents: a move to a new name in the same
+    /// folder (see `relocate`). Empty folders take the cheap path (`renameAsync`).
+    public func renameWithProgress(_ url: URL, to newName: String,
+                                   progress: ProviderProgress?) async throws -> URL {
+        guard case .prefix(_, _, let key) = S3Location.parse(url),
+              !key.isEmpty else { throw S3Error.notS3(url) }
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("/") else { throw S3Error.invalidFolderName(name: name) }
+        if !(key.hasSuffix("/") || url.hasDirectoryPath) {
+            let parent = key.contains("/") ? String(key[..<key.lastIndex(of: "/")!]) + "/" : ""
+            try await relocate(url, toKey: parent + name, refuseExisting: true, progress: progress)
+            return S3Location.childFileURL(under: url.deletingLastPathComponent(), name: name)
+        }
+        let oldPrefix = Self.folderKey(key)
+        let parentKey = String(oldPrefix.dropLast().split(separator: "/", omittingEmptySubsequences: false)
+                                    .dropLast().joined(separator: "/"))
+        let newPrefix = (parentKey.isEmpty ? "" : parentKey + "/") + name + "/"
+        try await relocate(url, toKey: newPrefix, refuseExisting: true, progress: progress)
+        return S3Location.childFolderURL(under: url.deletingLastPathComponent(), name: name)
+    }
+
+    /// Within one bucket a plain drag moves, as Finder moves within one disk.
+    public func canMoveDirectly(_ source: URL, to destination: URL) -> Bool {
+        guard case .prefix(let p1, let b1, let k1) = S3Location.parse(source),
+              case .prefix(let p2, let b2, let k2) = S3Location.parse(destination) else { return false }
+        return p1 == p2 && b1 == b2 && !k1.isEmpty && !k2.isEmpty
+    }
+
+    /// Move within the bucket. The app has already settled Keep Both or Replace, so
+    /// an existing destination is overwritten (a folder's contents merge).
+    public func moveDirectly(_ source: URL, to destination: URL, progress: ProviderProgress?) async throws {
+        guard case .prefix(_, _, let key) = S3Location.parse(destination), !key.isEmpty else {
+            throw S3Error.notS3(destination)
+        }
+        let isFolder = source.hasDirectoryPath || source.absoluteString.hasSuffix("/")
+        try await relocate(source, toKey: isFolder ? Self.folderKey(key) : key,
+                           refuseExisting: false, progress: progress)
+    }
+
+    /// Move a file or folder to `newKey` in the same bucket. S3 has no rename or
+    /// move, so it's a server-side copy of everything, then a delete of the
     /// originals — in that order, so nothing is lost:
     ///
     /// 1. Copy every object (the exact list taken up front).
@@ -198,40 +237,41 @@ extension S3Provider {
     /// 3. On Stop or any failure during copying, remove the copies made so far and
     ///    leave the originals untouched.
     ///
-    /// Empty folders take the cheap path (`renameAsync`).
-    public func renameWithProgress(_ url: URL, to newName: String,
-                                   progress: ProviderProgress?) async throws -> URL {
+    /// `newKey` ends in "/" for a folder. With `refuseExisting`, something already
+    /// there is an error rather than overwritten.
+    private func relocate(_ url: URL, toKey newKey: String, refuseExisting: Bool,
+                          progress: ProviderProgress?) async throws {
         guard case .prefix(let profile, let bucket, let key) = S3Location.parse(url),
               !key.isEmpty else { throw S3Error.notS3(url) }
-        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, !name.contains("/") else { throw S3Error.invalidFolderName(name: name) }
         let isFolder = key.hasSuffix("/") || url.hasDirectoryPath
         let client = try await S3ClientPool.shared.clientForBucket(profile: profile, bucket: bucket)
+        let newName = (newKey.hasSuffix("/") ? String(newKey.dropLast()) : newKey)
+            .split(separator: "/").last.map(String.init) ?? newKey
 
         if !isFolder {
-            let parent = key.contains("/") ? String(key[..<key.lastIndex(of: "/")!]) + "/" : ""
-            let newKey = parent + name
-            let newURL = S3Location.childFileURL(under: url.deletingLastPathComponent(), name: name)
-            if await exists(newURL) { throw CocoaError(.fileWriteFileExists) }
+            if refuseExisting {
+                let taken = try await client.listObjectsV2(input: ListObjectsV2Input(
+                    bucket: bucket, maxKeys: 1, prefix: newKey))
+                if (taken.contents ?? []).contains(where: { $0.key == newKey }) {
+                    throw CocoaError(.fileWriteFileExists)
+                }
+            }
             progress?.setTotal(1, isPartial: false)
             try await copyKey(profile: profile, srcBucket: bucket, srcKey: key,
-                              dstBucket: bucket, dstKey: newKey, name: name, progress: progress)
+                              dstBucket: bucket, dstKey: newKey, name: newName, progress: progress)
             do {
                 _ = try await client.deleteObject(input: DeleteObjectInput(bucket: bucket, key: key))
             } catch {
                 // The copy is complete; only the original's removal failed.
                 throw S3Error.cannotDelete(name: url.lastPathComponent,
-                                           reason: "the file was copied to \u{201C}\(name)\u{201D}, "
+                                           reason: "the file was copied to \u{201C}\(newName)\u{201D}, "
                                                + "but the original couldn\u{2019}t be removed")
             }
-            return newURL
+            return
         }
 
         let oldPrefix = Self.folderKey(key)
-        let parentKey = String(oldPrefix.dropLast().split(separator: "/", omittingEmptySubsequences: false)
-                                    .dropLast().joined(separator: "/"))
-        let newPrefix = (parentKey.isEmpty ? "" : parentKey + "/") + name + "/"
-        let newURL = S3Location.childFolderURL(under: url.deletingLastPathComponent(), name: name)
+        let newPrefix = Self.folderKey(newKey)
 
         // The exact list of what will be copied (and later deleted).
         var objects: [(key: String, size: Int64)] = []
@@ -243,12 +283,19 @@ extension S3Provider {
             objects += (page.contents ?? []).compactMap { o in o.key.map { ($0, Int64(o.size ?? 0)) } }
             token = page.nextContinuationToken
         } while token != nil
-        if objects.allSatisfy({ $0.key == oldPrefix }) {
-            return try await renameAsync(url, to: name)     // empty: marker swap
+        if refuseExisting {
+            let taken = try await client.listObjectsV2(input: ListObjectsV2Input(
+                bucket: bucket, maxKeys: 1, prefix: newPrefix))
+            guard (taken.contents ?? []).isEmpty else { throw CocoaError(.fileWriteFileExists) }
         }
-        let taken = try await client.listObjectsV2(input: ListObjectsV2Input(
-            bucket: bucket, maxKeys: 1, prefix: newPrefix))
-        guard (taken.contents ?? []).isEmpty else { throw CocoaError(.fileWriteFileExists) }
+        // An empty folder is just its marker (or nothing at all): write the new one.
+        if objects.allSatisfy({ $0.key == oldPrefix }) {
+            _ = try await client.putObject(input: PutObjectInput(body: .data(Data()), bucket: bucket, key: newPrefix))
+            if !objects.isEmpty {
+                _ = try await client.deleteObject(input: DeleteObjectInput(bucket: bucket, key: oldPrefix))
+            }
+            return
+        }
 
         progress?.setTotal(objects.count, isPartial: false)
         var created: [String] = []
@@ -264,12 +311,13 @@ extension S3Provider {
             }
         } catch {
             // Undo: remove the partial copy; the originals were never touched.
+            // (With Replace, a copy may have overwritten an existing object; that
+            // object is gone either way, as it would be with any replace.)
             try? await deleteKeys(created, bucket: bucket, client: client)
             throw error
         }
         // Every copy landed: now remove exactly the originals that were copied.
         try await deleteKeys(objects.map(\.key), bucket: bucket, client: client)
-        return newURL
     }
 
     /// Delete these exact keys, in batches of 1,000 (DeleteObjects' limit).
