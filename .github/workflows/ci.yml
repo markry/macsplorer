@@ -6,7 +6,11 @@ name: CI
 # this public repo.
 
 on:
+  # Branches only: a release tag points at a commit its branch push already
+  # tested, so a second run per tag only doubles the queue time (and the
+  # failure emails when GitHub's macOS runners are short).
   push:
+    branches: ['**']
   pull_request:
 
 concurrency:
