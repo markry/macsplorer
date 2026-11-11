@@ -1,4 +1,5 @@
 import AppKit
+import MacSplorerCore
 
 /// The breadcrumb face of the address bar: the current folder's path rendered as
 /// clickable folder buttons separated by `›`, Windows-Explorer-style. Clicking a
@@ -117,19 +118,27 @@ final class PathBarView: NSView {
             // A registered provider with no mount: the trail roots at its scheme root.
             result = [(scheme.capitalized, root)]
         }
-        guard let host = url.host, !host.isEmpty else { return result }
-        // A mount that is itself the host (one volume per deployment) already named it.
-        let mountNamedTheHost = (mount?.url.host?.isEmpty == false)
+        let authority = LocationIdentity.Authority(url)
         func rebuilt(path: String) -> URL? {
             guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-            c.host = host; c.path = path; c.query = nil; c.fragment = nil
+            c.path = path; c.query = nil; c.fragment = nil
             return c.url
         }
-        if !mountNamedTheHost, let profile = rebuilt(path: "/") { result.append((host, profile)) }
+        // A mount that names the account (one volume per deployment or user) already
+        // stands for it; under a scheme root, the account gets its own segment.
+        let mountNamesAccount = mount.map { !LocationIdentity.Authority($0.url).isEmpty } ?? false
+        if !authority.isEmpty, !mountNamesAccount, let account = rebuilt(path: "/") {
+            result.append((authority.display, account))
+        }
+        // Folders below the mount's own path; the mount's segment already covers those
+        // above it. Host-less locations get their folders too, rooted at the mount.
+        let components = LocationIdentity.components(url)
+        let skip = mount.map { LocationIdentity.components($0.url).count } ?? 0
         var accumulated = "/"
-        for component in url.pathComponents.filter({ $0 != "/" }) {
+        for (index, component) in components.enumerated() {
             accumulated += component + "/"
-            if let u = rebuilt(path: accumulated) { result.append((component, u)) }
+            guard index >= skip, let u = rebuilt(path: accumulated) else { continue }
+            result.append((component, u))
         }
         return result
     }

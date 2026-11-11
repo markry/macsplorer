@@ -359,14 +359,8 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
         guard let separator = entered.range(of: "://") else { return nil }
         let scheme = entered[..<separator.lowerBound].lowercased()
         guard scheme != "file", Providers.isRegistered(scheme: scheme) else { return nil }
-        let rest = entered[separator.upperBound...]
-        let slash = rest.firstIndex(of: "/") ?? rest.endIndex
-        var components = URLComponents()
-        components.scheme = scheme
-        components.host = String(rest[..<slash])
-        let path = String(rest[slash...])
-        components.path = path.isEmpty ? "/" : (path.removingPercentEncoding ?? path)
-        return components.url
+        // user@host:port is split into its parts; as one "host" it made no URL at all.
+        return LocationIdentity.parseAddress(entered)
     }
 
     /// If `path` is `/Volumes/<name>` and <name> is a connected S3 profile, returns
@@ -968,7 +962,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     }
 
     private func configureStatusLabel() {
-        statusLabel.stringValue = "MacSplorer \(MacSplorer.version)"
+        statusLabel.stringValue = "MacSplorer \(MacSplorer.displayVersion)"
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.lineBreakMode = .byTruncatingMiddle

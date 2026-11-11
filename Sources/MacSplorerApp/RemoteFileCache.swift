@@ -7,10 +7,10 @@ import MacSplorerCore
 /// and dragged to the Finder like any other file.
 ///
 /// Files land under this app's Caches folder, mirroring the remote URL's shape so a
-/// downloaded file keeps a sensible name and path. A copy is reused for the rest of
-/// the session; a new launch fetches again, which keeps a "latest" view honest
-/// without needing a change feed. Concurrent requests for the same URL share one
-/// download rather than racing.
+/// downloaded file keeps a sensible name and path. A copy is reused only while the
+/// file on the server still has the size and date it had when fetched: someone may
+/// have uploaded a new version since. Concurrent requests for the same URL share
+/// one download rather than racing.
 @MainActor
 final class RemoteFileCache {
     static let shared = RemoteFileCache()
@@ -22,6 +22,24 @@ final class RemoteFileCache {
     /// An explicit open clears the entry and tries again.
     private var failed: Set<URL> = []
     private var inFlight: [URL: Task<URL, Error>] = [:]
+    /// What each file looked like on the server when it was fetched.
+    private var fingerprints: [URL: Fingerprint] = [:]
+    /// When each copy was last confirmed current, for callers that can't wait.
+    private var verifiedAt: [URL: Date] = [:]
+    /// How long a confirmed copy is trusted without asking the server again.
+    private static let trustInterval: TimeInterval = 30
+
+    private struct Fingerprint: Equatable {
+        let size: Int?
+        let modified: Date?
+
+        /// Nil when the provider reports neither, so there's nothing to compare.
+        init?(_ item: FSItem) {
+            guard item.byteSize != nil || item.modificationDate != nil else { return nil }
+            size = item.byteSize
+            modified = item.modificationDate
+        }
+    }
 
     private init() {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
@@ -33,12 +51,22 @@ final class RemoteFileCache {
     func localFile(for url: URL) async throws -> URL {
         let destination = localPath(for: url)
         if fetched.contains(url), FileManager.default.fileExists(atPath: destination.path) {
-            return destination
+            if await isCurrent(url) {
+                verifiedAt[url] = Date()
+                return destination
+            }
+            fetched.remove(url)
+            verifiedAt[url] = nil
         }
         if let existing = inFlight[url] { return try await existing.value }
 
+        let provider = Providers.provider(for: url)
         let task = Task<URL, Error> {
-            try await Providers.provider(for: url).download(url, to: destination)
+            // Note what's on the server first: a version uploaded during the download
+            // then reads as a change next time, rather than being mistaken for this one.
+            let item = try? await provider.metadata(for: url)
+            try await provider.download(url, to: destination)
+            await MainActor.run { self.fingerprints[url] = item.flatMap(Fingerprint.init) }
             return destination
         }
         inFlight[url] = task
@@ -46,13 +74,26 @@ final class RemoteFileCache {
         let result = try await task.value
         fetched.insert(url)
         failed.remove(url)
+        verifiedAt[url] = Date()
         return result
     }
 
-    /// The local copy if one is already on disk from this session — for callers that
-    /// can't wait (Quick Look asks synchronously).
+    /// Whether the copy fetched earlier still matches the file on the server. When
+    /// the provider can't say (no size or date, or it can't be reached), the copy is
+    /// kept: an old copy beats none when offline.
+    private func isCurrent(_ url: URL) async -> Bool {
+        guard let known = fingerprints[url],
+              let item = try? await Providers.provider(for: url).metadata(for: url),
+              let now = Fingerprint(item) else { return true }
+        return now == known
+    }
+
+    /// The local copy, if this session has one that was confirmed current within the
+    /// last few seconds — for callers that can't wait (Quick Look asks synchronously).
+    /// Otherwise nil, and the caller's prefetch checks with the server.
     func cachedFile(for url: URL) -> URL? {
-        guard fetched.contains(url) else { return nil }
+        guard fetched.contains(url), let verified = verifiedAt[url],
+              Date().timeIntervalSince(verified) < Self.trustInterval else { return nil }
         let path = localPath(for: url)
         return FileManager.default.fileExists(atPath: path.path) ? path : nil
     }

@@ -20,9 +20,10 @@ enum ProviderMounts {
         Providers.mounts().first { sameLocation($0.url, url) }
     }
 
-    /// The mount whose namespace contains `url`.
+    /// The mount whose namespace contains `url` — the most specific one when several
+    /// do (an account's own mount over its scheme's root).
     static func mount(containing url: URL) -> ProviderMount? {
-        Providers.mounts().first { contains($0.url, url) }
+        LocationIdentity.bestMount(for: url, among: Providers.mounts()) { $0.url }
     }
 
     /// `/Volumes/<name>` (as typed in the address bar) → that mount.
@@ -34,24 +35,15 @@ enum ProviderMounts {
         return Providers.mounts().first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 
-    /// Same scheme, host and (decoded) path — ignoring percent-encoding differences
-    /// and trailing slashes.
+    /// Same scheme, account (user, host and port) and (decoded) path — ignoring
+    /// percent-encoding differences and trailing slashes.
     static func sameLocation(_ a: URL, _ b: URL) -> Bool {
-        a.scheme == b.scheme && (a.host ?? "") == (b.host ?? "") && components(a) == components(b)
+        LocationIdentity.same(a, b)
     }
 
-    /// Whether `inner` is `outer` or lies beneath it. A host-less `outer` (a scheme
-    /// root) contains every location of its scheme.
+    /// Whether `inner` is `outer` or lies beneath it, in the same account. A scheme
+    /// root (no user, host or port) contains every location of its scheme.
     static func contains(_ outer: URL, _ inner: URL) -> Bool {
-        guard outer.scheme == inner.scheme else { return false }
-        let outerHost = outer.host ?? ""
-        if outerHost.isEmpty { return true }
-        guard outerHost == (inner.host ?? "") else { return false }
-        let o = components(outer), i = components(inner)
-        return i.count >= o.count && Array(i.prefix(o.count)) == o
-    }
-
-    private static func components(_ url: URL) -> [String] {
-        url.pathComponents.filter { $0 != "/" }
+        LocationIdentity.mount(outer, contains: inner)
     }
 }

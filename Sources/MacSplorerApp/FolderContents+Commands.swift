@@ -499,14 +499,17 @@ extension FolderContents {
         return Providers.provider(for: destination).canMoveDirectly(source, to: placed)
     }
 
+    /// Whether `directory` is `url` itself or lies inside it — a folder dropped into
+    /// itself. Remote locations compare by account too, so the same path under
+    /// another S3 profile is somewhere else.
     func isSelfOrDescendant(_ url: URL, of directory: URL) -> Bool {
-        let target = url.standardizedFileURL.path
-        let dir = directory.standardizedFileURL.path
-        return dir == target || dir.hasPrefix(target + "/")
+        LocationIdentity.isSelfOrDescendant(directory, of: url)
     }
 
+    /// The same location: by path locally; by scheme, account and path remotely.
     func samePath(_ a: URL?, _ b: URL?) -> Bool {
-        a?.standardizedFileURL.path == b?.standardizedFileURL.path
+        guard let a, let b else { return a == nil && b == nil }
+        return LocationIdentity.same(a, b)
     }
 
     /// Copy or move `urls` into `destination`, resolving name collisions per the

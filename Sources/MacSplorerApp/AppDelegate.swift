@@ -42,6 +42,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             S3ConflictMonitor.check(changed: changed)
         }
         credentialWatcher.watch(folders: S3Mount.locationFolders())
+        // A provider module saying its mounts changed refreshes /Volumes, as S3's own
+        // credential-file changes do.
+        NotificationCenter.default.addObserver(
+            forName: Providers.mountsDidChangeNotification, object: nil, queue: .main) { _ in
+            FolderChange.notify([S3Mount.volumesURL])
+        }
         NotificationCenter.default.addObserver(
             self, selector: #selector(s3LocationsChanged),
             name: S3Mount.locationsChanged, object: nil)
@@ -309,9 +315,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
         appItem.submenu = appMenu
-        appMenu.addItem(withTitle: "About \(appName)",
-                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
-                        keyEquivalent: "")
+        let about = appMenu.addItem(withTitle: "About \(appName)",
+                                    action: #selector(showAbout(_:)), keyEquivalent: "")
+        about.target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit \(appName)",
                         action: #selector(NSApplication.terminate(_:)),
@@ -626,6 +632,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc private func s3LocationsChanged() {
         credentialWatcher.watch(folders: S3Mount.locationFolders())
+    }
+
+    /// The standard About panel, with the version as `MacSplorer.displayVersion`
+    /// gives it, so a build with a plugins module says which edition it is.
+    @objc private func showAbout(_ sender: Any?) {
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationVersion: MacSplorer.displayVersion])
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func getInfoForSelection(_ sender: Any?) {

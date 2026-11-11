@@ -395,6 +395,18 @@ public enum Providers {
         mountSources.append(source)
     }
 
+    /// Posted (on the main thread) by `mountsDidChange()`.
+    public static let mountsDidChangeNotification = Notification.Name("net.ryland.macsplorer.mountsDidChange")
+
+    /// Tell the app that a registered mount source would now return something
+    /// different — a credential file appeared outside the app, say. Call from any
+    /// thread; /Volumes and everything showing it refresh.
+    public static func mountsDidChange() {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: mountsDidChangeNotification, object: nil)
+        }
+    }
+
     /// Every mount currently contributed by the registered sources.
     public static func mounts() -> [ProviderMount] {
         lock.lock(); let sources = mountSources; lock.unlock()

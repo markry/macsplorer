@@ -347,7 +347,7 @@ final class FolderTreeController: NSObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.outlineView.expandItem(volumes)
-            var node = self.treeChildren(of: volumes).first { ProviderMounts.contains($0.url, target) }
+            var node = LocationIdentity.bestMount(for: target, among: self.treeChildren(of: volumes)) { $0.url }
             while let current = node, generation == self.revealGeneration {
                 if ProviderMounts.sameLocation(current.url, target) {
                     self.selectWithoutNavigating(current)
@@ -356,9 +356,9 @@ final class FolderTreeController: NSObject {
                 let children = await self.loadProviderChildren(of: current)
                 guard generation == self.revealGeneration else { return }
                 self.outlineView.expandItem(current)
-                node = children.first {
-                    ProviderMounts.contains($0.url, target) && !ProviderMounts.sameLocation($0.url, current.url)
-                }
+                node = LocationIdentity.bestMount(
+                    for: target,
+                    among: children.filter { !ProviderMounts.sameLocation($0.url, current.url) }) { $0.url }
             }
         }
     }
