@@ -18,6 +18,10 @@ public protocol FileSystemProvider {
     /// than pretending every location behaves like a local disk.
     var capabilities: ProviderCapabilities { get }
 
+    /// The backend's name as people know it ("S3"), for messages that need to say
+    /// where something happens. Nil reads as "this location". Default: nil.
+    var displayName: String? { get }
+
     // MARK: Enumeration & metadata
     //
     // Async because a remote backend (S3) does network I/O and can fail. Local
@@ -178,6 +182,8 @@ public extension FileSystemProvider {
     func canCopyDirectly(_ source: URL, to destination: URL) async -> Bool { false }
 
     func canMoveDirectly(_ source: URL, to destination: URL) -> Bool { false }
+
+    var displayName: String? { nil }
 
     func infoRows(for url: URL) async throws -> [(label: String, value: String)] { [] }
 

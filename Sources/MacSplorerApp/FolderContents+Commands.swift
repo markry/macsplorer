@@ -193,15 +193,17 @@ extension FolderContents {
         guard !trimmed.isEmpty, trimmed != item.name else { return false }
         // A remote rename needs the network: let the edit close now, then reload
         // with the result — the new name on success, the old one (and why) if not.
-        // On S3 a file, or a folder with contents, is a copy of everything plus a
-        // delete, so a folder asks first (with a count) and both show progress/Stop.
+        // Where rename isn't atomic (S3: a copy of everything plus a delete), a folder
+        // with contents asks first, with a count; both show progress/Stop. A backend
+        // that renames in place in one step (`atomicRename`) just does it.
         if !item.url.isFileURL {
             let parent = item.url.deletingLastPathComponent()
             let provider = Providers.provider(for: item.url)
             let isFolder = item.isDirectory && !item.isPackage
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if isFolder, let count = try? await provider.peekCount(at: item.url, limit: 1000),
+                if isFolder, !provider.capabilities.atomicRename,
+                   let count = try? await provider.peekCount(at: item.url, limit: 1000),
                    count.items > 1 || count.isPartial,
                    !self.confirmRemoteRename(item.url, from: item.name, to: trimmed, count: count) {
                     self.finishMutation(affected: [parent], selecting: [item.name])
@@ -243,9 +245,12 @@ extension FolderContents {
     /// a public one set).
     private func confirmRemoteRename(_ url: URL, from oldName: String, to newName: String,
                                      count: ProviderCount) -> Bool {
+        let isS3 = url.scheme == S3Location.scheme
+        let noun = isS3 ? "object" : "item"
+        let backend = Providers.provider(for: url).displayName
         let amount = count.isPartial
-            ? "More than \(count.items.formatted()) objects"
-            : "\(count.items.formatted()) object\(count.items == 1 ? "" : "s") · \(FSFormat.size(count.bytes))"
+            ? "More than \(count.items.formatted()) \(noun)s"
+            : "\(count.items.formatted()) \(noun)\(count.items == 1 ? "" : "s") · \(FSFormat.size(count.bytes))"
         var links = "Any links to these files will stop working."
         if case .prefix(_, let bucket, let key) = S3Location.parse(url),
            let base = Preferences.shared.s3PublicAddresses[bucket] {
@@ -255,7 +260,9 @@ extension FolderContents {
         let alert = NSAlert()
         alert.messageText = "Rename “\(oldName)” to “\(newName)”?"
         alert.informativeText = "\(amount).\n\n"
-            + "S3 has no rename, so every file is copied to the new name on S3 and the originals are "
+            + (backend.map { "\($0) has no rename, so every file is copied to the new name on \($0)" }
+               ?? "This location can’t rename a folder in place, so every file is copied to the new name")
+            + " and the originals are "
             + "deleted only after all the copies have succeeded. If you stop it or something fails, "
             + "the originals are kept and the partial copy is removed.\n\n\(links)"
         alert.addButton(withTitle: "Rename")

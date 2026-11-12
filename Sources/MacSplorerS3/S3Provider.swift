@@ -19,6 +19,8 @@ public final class S3Provider: FileSystemProvider {
     /// methods each carry their own URL), so nothing is stored.
     public init(url: URL) {}
 
+    public var displayName: String? { "S3" }
+
     public var scheme: String { S3Location.scheme }
 
     public var capabilities: ProviderCapabilities {
