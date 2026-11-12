@@ -7,7 +7,14 @@ import MacSplorerCore
 /// neutral style that follows light and dark mode.
 final class InfoChipsView: NSView {
     private let chips: [InfoChip]
-    private let maxWidth: CGFloat
+    /// The width chips wrap within; changing it re-flows them.
+    var maxWidth: CGFloat {
+        didSet {
+            guard maxWidth != oldValue else { return }
+            invalidateIntrinsicContentSize()
+            needsLayout = true
+        }
+    }
     private var chipViews: [ChipView] = []
     private let spacing: CGFloat = 4
 

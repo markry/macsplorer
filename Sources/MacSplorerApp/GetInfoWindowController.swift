@@ -64,6 +64,20 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
     private var remoteTask: Task<Void, Never>?
     private var sizeTask: Task<Void, Never>?
 
+    /// Values that wrap to the width of the value column, and chip rows, re-fitted
+    /// whenever that width changes.
+    private var wrappingFields: [NSTextField] = []
+    private var chipViews: [InfoChipsView] = []
+    private weak var grid: NSGridView?
+    private weak var content: NSStackView?
+    private var fittingHeight = false
+
+    private static let defaultWidth: CGFloat = 480
+    private static let minWidth: CGFloat = 360
+    /// Labels wrap at this width rather than widening the label column for every row.
+    private static let labelMaxWidth: CGFloat = 140
+    private static let widthKey = "getInfoWindowWidth"
+
     private static let keys: Set<URLResourceKey> = [
         .localizedNameKey, .localizedTypeDescriptionKey,
         .creationDateKey, .contentModificationDateKey,
@@ -77,12 +91,15 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
 
     init(url: URL) {
         self.url = url
+        let saved = CGFloat(UserDefaults.standard.double(forKey: Self.widthKey))
+        let width = saved >= Self.minWidth ? saved : Self.defaultWidth
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 200),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: width, height: 200),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
         window.title = "\(url.lastPathComponent) Info"
         window.isReleasedWhenClosed = false
+        window.contentMinSize = NSSize(width: Self.minWidth, height: 100)
         super.init(window: window)
         window.delegate = self
         if url.isFileURL || url.scheme == nil {
@@ -90,7 +107,68 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
         } else {
             buildRemoteLayout()
         }
+        fitToWidth()
         window.center()
+    }
+
+    // MARK: - Width
+
+    /// Only the width is the user's to change; the height follows the content.
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        fittingHeight ? frameSize : NSSize(width: frameSize.width, height: sender.frame.height)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard !fittingHeight, let window else { return }
+        UserDefaults.standard.set(Double(window.contentLayoutRect.width), forKey: Self.widthKey)
+        fitToWidth()
+    }
+
+    /// Re-wrap values to the value column's width, then size the window's height
+    /// to what that needs.
+    private func fitToWidth() {
+        guard let window, let content, let grid else { return }
+        content.layoutSubtreeIfNeeded()
+        let labels = (0..<grid.numberOfRows).compactMap { grid.cell(atColumnIndex: 0, rowIndex: $0).contentView }
+        let labelColumn = min(Self.labelMaxWidth, labels.map(\.fittingSize.width).max() ?? 0)
+        let valueWidth = max(120, window.contentLayoutRect.width - 36 - labelColumn - grid.columnSpacing)
+        for field in wrappingFields where field.preferredMaxLayoutWidth != valueWidth {
+            field.preferredMaxLayoutWidth = valueWidth
+            field.invalidateIntrinsicContentSize()
+        }
+        for chips in chipViews { chips.maxWidth = valueWidth }
+        content.layoutSubtreeIfNeeded()
+        let height = content.fittingSize.height
+        guard abs(window.contentLayoutRect.height - height) > 0.5 else { return }
+        fittingHeight = true
+        var frame = window.frameRect(forContentRect: NSRect(origin: .zero,
+            size: NSSize(width: window.contentLayoutRect.width, height: height)))
+        frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+        window.setFrame(frame, display: true)
+        fittingHeight = false
+    }
+
+    /// A value that wraps to the value column. Strings without spaces (IDs, keys,
+    /// paths) break anywhere; it stays selectable so it can be copied whole.
+    private func wrappingValue(_ string: String) -> NSTextField {
+        let field = NSTextField(wrappingLabelWithString: string)
+        field.font = .systemFont(ofSize: 11)
+        field.isSelectable = true
+        field.lineBreakMode = string.contains(" ") ? .byWordWrapping : .byCharWrapping
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.preferredMaxLayoutWidth = Self.defaultWidth - 36 - Self.labelMaxWidth - 10
+        wrappingFields.append(field)
+        return field
+    }
+
+    private func makeGrid() -> NSGridView {
+        let grid = NSGridView(numberOfColumns: 2, rows: 0)
+        grid.rowSpacing = 6
+        grid.columnSpacing = 10
+        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 1).xPlacement = .leading
+        self.grid = grid
+        return grid
     }
 
     @available(*, unavailable)
@@ -137,10 +215,7 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
         header.spacing = 10
 
         // Detail grid.
-        let grid = NSGridView(numberOfColumns: 2, rows: 0)
-        grid.rowSpacing = 6
-        grid.columnSpacing = 10
-        grid.column(at: 0).xPlacement = .trailing
+        let grid = makeGrid()
 
         if isVolume {
             addVolumeRows(to: grid, values: values)
@@ -174,9 +249,11 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
         content.translatesAutoresizingMaskIntoConstraints = false
         content.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
 
+        self.content = content
         guard let root = window?.contentView else { return }
         root.addSubview(content)
         NSLayoutConstraint.activate([
+            grid.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -18),
             icon.widthAnchor.constraint(equalToConstant: 48),
             icon.heightAnchor.constraint(equalToConstant: 48),
             content.topAnchor.constraint(equalTo: root.topAnchor),
@@ -214,16 +291,9 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
         header.alignment = .centerY
         header.spacing = 10
 
-        let grid = NSGridView(numberOfColumns: 2, rows: 0)
-        grid.rowSpacing = 6
-        grid.columnSpacing = 10
-        grid.column(at: 0).xPlacement = .trailing
+        let grid = makeGrid()
         let parent = BrowserPaneController.addressString(for: url.deletingLastPathComponent())
-        let whereLabel = valueLabel(parent)
-        whereLabel.lineBreakMode = .byTruncatingMiddle
-        whereLabel.toolTip = parent
-        whereLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
-        addRow(grid, "Where:", whereLabel)
+        addRow(grid, "Where:", wrappingValue(parent))
         install(header: header, grid: grid, icon: icon)
 
         let url = url
@@ -252,10 +322,8 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
             } catch {
                 guard let self, !Task.isCancelled else { return }
                 if kind.stringValue == "Loading…" { kind.stringValue = "Couldn’t get information" }
-                let message = self.valueLabel(error.localizedDescription)
+                let message = self.wrappingValue(error.localizedDescription)
                 message.textColor = .secondaryLabelColor
-                message.lineBreakMode = .byWordWrapping
-                message.preferredMaxLayoutWidth = 240
                 self.addRow(grid, "Error:", message)
             }
         }
@@ -265,12 +333,13 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
     private func view(for row: InfoRow) -> NSView {
         var parts: [NSView] = []
         if let value = row.value {
-            let text = valueLabel(value)
-            text.lineBreakMode = .byTruncatingMiddle
-            text.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
-            parts.append(text)
+            parts.append(wrappingValue(value))
         }
-        if !row.chips.isEmpty { parts.append(InfoChipsView(chips: row.chips)) }
+        if !row.chips.isEmpty {
+            let chips = InfoChipsView(chips: row.chips)
+            chipViews.append(chips)
+            parts.append(chips)
+        }
         if parts.count == 1 { return parts[0] }
         let stack = NSStackView(views: parts.isEmpty ? [valueLabel("—")] : parts)
         stack.orientation = .vertical
@@ -392,10 +461,8 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
         let shown = parent == home ? "~"
             : parent.hasPrefix(home + "/") ? "~" + parent.dropFirst(home.count)
             : parent
-        let label = valueLabel(shown)
-        label.lineBreakMode = .byTruncatingMiddle
+        let label = wrappingValue(shown)
         label.toolTip = parent
-        label.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
         return label
     }
 
@@ -407,10 +474,16 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func addRow(_ grid: NSGridView, _ label: String, _ value: NSView) {
-        let key = NSTextField(labelWithString: label)
+        let key = NSTextField(wrappingLabelWithString: label)
         key.font = .systemFont(ofSize: 11, weight: .semibold)
         key.textColor = .secondaryLabelColor
-        grid.addRow(with: [key, value])
+        key.alignment = .right
+        key.preferredMaxLayoutWidth = Self.labelMaxWidth
+        key.isSelectable = false
+        let row = grid.addRow(with: [key, value])
+        row.yPlacement = .top
+        // Rows added after the window opened (a remote provider answering) re-fit it.
+        if window?.isVisible == true { DispatchQueue.main.async { [weak self] in self?.fitToWidth() } }
     }
 
     private func addRow(_ grid: NSGridView, _ label: String, _ value: NSTextField) {
