@@ -514,6 +514,11 @@ extension FolderTreeController: NSOutlineViewDataSource, NSOutlineViewDelegate {
             return true
         }
         guard fsItem.isExpandableInTree else { return false }
+        // /Volumes also holds the S3 profiles and provider mounts the tree adds there,
+        // which no check of the disk can see.
+        if S3Mount.isVolumesRoot(fsItem.url), !(s3ProfileNodes().isEmpty && mountNodes().isEmpty) {
+            return true
+        }
         if let known = fsItem.knownHasSubfolders(includeHidden: showHiddenFiles) {
             return known
         }

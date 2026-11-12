@@ -245,12 +245,9 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
                     self.addRow(grid, "Size:", self.valueLabel(item.byteSize.map { FSFormat.size(Int64($0)) } ?? "—"))
                     self.addDateRows(to: grid, created: item.creationDate, modified: item.modificationDate)
                 }
-                for row in try await provider.infoRows(for: url) {
+                for row in try await provider.detailedInfoRows(for: url) {
                     guard !Task.isCancelled else { return }
-                    let value = self.valueLabel(row.value)
-                    value.lineBreakMode = .byTruncatingMiddle
-                    value.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
-                    self.addRow(grid, row.label + ":", value)
+                    self.addRow(grid, row.label + ":", self.view(for: row))
                 }
             } catch {
                 guard let self, !Task.isCancelled else { return }
@@ -262,6 +259,24 @@ final class GetInfoWindowController: NSWindowController, NSWindowDelegate {
                 self.addRow(grid, "Error:", message)
             }
         }
+    }
+
+    /// A provider row's value: its text, its chips, or the text with chips below.
+    private func view(for row: InfoRow) -> NSView {
+        var parts: [NSView] = []
+        if let value = row.value {
+            let text = valueLabel(value)
+            text.lineBreakMode = .byTruncatingMiddle
+            text.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
+            parts.append(text)
+        }
+        if !row.chips.isEmpty { parts.append(InfoChipsView(chips: row.chips)) }
+        if parts.count == 1 { return parts[0] }
+        let stack = NSStackView(views: parts.isEmpty ? [valueLabel("—")] : parts)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        return stack
     }
 
     private func addDateRows(to grid: NSGridView, created: Date?, modified: Date?) {

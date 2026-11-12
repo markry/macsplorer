@@ -34,6 +34,10 @@ public protocol FileSystemProvider {
     /// shared). Default: none.
     func infoRows(for url: URL) async throws -> [(label: String, value: String)]
 
+    /// The same rows, able to carry colored chips (tags, labels) as well as text.
+    /// Default: `infoRows`, as plain text. A provider implements one or the other.
+    func detailedInfoRows(for url: URL) async throws -> [InfoRow]
+
     /// Whether `directory` contains at least one non-package subfolder (drives the
     /// tree's disclosure triangle). Best-effort: failures resolve to `false`.
     func hasChildFolders(at directory: URL, includeHidden: Bool) async -> Bool
@@ -176,6 +180,10 @@ public extension FileSystemProvider {
     func canMoveDirectly(_ source: URL, to destination: URL) -> Bool { false }
 
     func infoRows(for url: URL) async throws -> [(label: String, value: String)] { [] }
+
+    func detailedInfoRows(for url: URL) async throws -> [InfoRow] {
+        try await infoRows(for: url).map { InfoRow(label: $0.label, value: $0.value) }
+    }
 
     func moveDirectly(_ source: URL, to destination: URL, progress: ProviderProgress?) async throws {
         throw ProviderError.uploadUnsupported(destination)

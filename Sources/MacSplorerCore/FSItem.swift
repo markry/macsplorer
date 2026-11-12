@@ -206,20 +206,34 @@ public final class FSItem {
     /// failure (e.g. permission denied) rather than throwing.
     public static func contents(of directory: URL,
                                 includeHidden: Bool = false) -> [FSItem] {
-        let options: FileManager.DirectoryEnumerationOptions =
-            includeHidden ? [] : [.skipsHiddenFiles]
         // Enumerate through the *resolved* directory: listing a symlink path
         // directly (e.g. ~/OneDrive -> ~/Library/CloudStorage/OneDrive-Personal)
         // fails, while the resolved target lists fine. Re-base each child under
         // the original `directory` so the address bar and tree keep the friendly
         // symlink-based path rather than exposing the CloudStorage location.
-        let enumerationURL = directory.resolvingSymlinksInPath()
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: enumerationURL,
-            includingPropertiesForKeys: resourceKeys,
-            options: options
-        ) else { return [] }
+        let urls = entries(of: directory.resolvingSymlinksInPath(), keys: resourceKeys,
+                           includeHidden: includeHidden)
         return urls.map { FSItem(url: directory.appendingPathComponent($0.lastPathComponent)) }
+    }
+
+    /// A directory's entries, tolerating ones that can't be read.
+    ///
+    /// Listing with prefetched properties fails for the whole folder when a single
+    /// entry can't be examined — a network share in /Volumes that stopped answering
+    /// does it — and the folder then looked empty. When that happens, list the names
+    /// alone and keep the entries that can still be read. Empty on real failure
+    /// (permission denied, not a folder).
+    static func entries(of directory: URL, keys: [URLResourceKey], includeHidden: Bool,
+                        prefetching: (URL, [URLResourceKey], FileManager.DirectoryEnumerationOptions) throws -> [URL]
+                            = { try FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: $1,
+                                                                            options: $2) }) -> [URL] {
+        let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
+        if let urls = try? prefetching(directory, keys, options) { return urls }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return [] }
+        return names
+            .filter { includeHidden || !$0.hasPrefix(".") }
+            .map { directory.appendingPathComponent($0) }
+            .filter { (try? $0.resourceValues(forKeys: Set(keys))) != nil }
     }
 
     /// Folder-only children for the left tree — lazy, cached, name-sorted. The
@@ -290,14 +304,9 @@ public final class FSItem {
     /// Pure, side-effect-free check suitable for a background queue: does `url`
     /// contain at least one non-package subfolder? Stops at the first match.
     public static func directoryHasSubfolders(at url: URL, includeHidden: Bool) -> Bool {
-        let options: FileManager.DirectoryEnumerationOptions =
-            includeHidden ? [] : [.skipsHiddenFiles]
-        let enumerationURL = url.resolvingSymlinksInPath()
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: enumerationURL,
-            includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey],
-            options: options
-        ) else { return false }
+        let urls = entries(of: url.resolvingSymlinksInPath(),
+                           keys: [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey],
+                           includeHidden: includeHidden)
         for child in urls {
             guard let values = try? child.resourceValues(
                 forKeys: [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey]) else { continue }
