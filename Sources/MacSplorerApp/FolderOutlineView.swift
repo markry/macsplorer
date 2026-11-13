@@ -1,4 +1,5 @@
 import AppKit
+import MacSplorerCore
 
 /// An `NSOutlineView` that vends a context menu for the right-clicked row
 /// (selecting it first, Finder-style).
@@ -45,10 +46,13 @@ final class FolderOutlineView: NSOutlineView, NSMenuItemValidation {
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
-        case #selector(cut(_:)), #selector(copy(_:)):
+        case #selector(copy(_:)):
             return selectedFolderURL?() != nil
+        case #selector(cut(_:)):
+            return selectedFolderURL?().map { LocationPermissions.canRemove($0) } ?? false
         case #selector(paste(_:)):
-            return selectedFolderURL?() != nil && canPaste?() == true
+            guard let url = selectedFolderURL?() else { return false }
+            return LocationPermissions.canAdd(into: url) && canPaste?() == true
         default:
             return true
         }

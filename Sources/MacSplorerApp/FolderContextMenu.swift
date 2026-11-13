@@ -27,12 +27,18 @@ enum FolderContextMenu {
                      action: Selector, newAction: Selector) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        func add(_ title: String, _ kind: FolderMenuAction.Kind) {
+        func add(_ title: String, _ kind: FolderMenuAction.Kind, enabled: Bool = true) {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = target
             item.representedObject = FolderMenuAction(kind, url)
+            item.isEnabled = enabled
             menu.addItem(item)
         }
+        // What this folder's place allows: putting things into it, and moving,
+        // renaming or deleting it (a question for the folder it's in).
+        let canAdd = LocationPermissions.canAdd(into: url)
+        let canRemove = LocationPermissions.canRemove(url)
+        let canAddBeside = LocationPermissions.canAdd(into: url.deletingLastPathComponent())
         add("Open", .open)
         add("Open in New Window", .openInNewWindow)
         // Recents is a view, not a folder on disk: it can't be renamed, trashed,
@@ -47,9 +53,11 @@ enum FolderContextMenu {
             return menu
         }
         add("Open in Terminal", .openInTerminal)
-        menu.addItem(NewDocument.submenuItem(for: url, target: target, action: newAction))
+        if canAdd {
+            menu.addItem(NewDocument.submenuItem(for: url, target: target, action: newAction))
+        }
         menu.addItem(.separator())
-        add("Cut", .cut)
+        add("Cut", .cut, enabled: canRemove)
         add("Copy", .copy)
         // Greyed when there's nothing to paste, rather than missing — see the
         // details pane's menu for why.
@@ -57,12 +65,12 @@ enum FolderContextMenu {
                                action: action, keyEquivalent: "")
         paste.target = target
         paste.representedObject = FolderMenuAction(.pasteInto, url)
-        paste.isEnabled = Clipboard.shared.canPaste
+        paste.isEnabled = canAdd && Clipboard.shared.canPaste
         menu.addItem(paste)
-        add("Duplicate", .duplicate)
+        add("Duplicate", .duplicate, enabled: canAddBeside)
         menu.addItem(.separator())
-        add("Rename", .rename)
-        add("Move to Trash", .trash)
+        add("Rename", .rename, enabled: LocationPermissions.canRename(url))
+        add("Move to Trash", .trash, enabled: canRemove)
         menu.addItem(.separator())
         add("Reveal in Finder", .reveal)
         add("Copy Path", .copyPath)

@@ -425,10 +425,32 @@ final class FolderContents: NSObject {
 
     var hasSelection: Bool { !selectedIndexes().isEmpty }
     /// Whether items can be put into `url`. False for Recents, which shows files where
-    /// they already live and has no folder behind it, and for read-only providers.
+    /// they already live and has no folder behind it, for read-only providers, and
+    /// for read-only places inside a writable one.
     func accepts(itemsInto url: URL?) -> Bool {
         guard let url else { return false }
-        return Providers.provider(for: url).capabilities.canWrite
+        return LocationPermissions.canAdd(into: url)
+    }
+
+    /// Whether every selected item can be deleted or moved away (cut, trash).
+    var canRemoveSelection: Bool {
+        let urls = selectedURLs()
+        return !urls.isEmpty && urls.allSatisfy(LocationPermissions.canRemove)
+    }
+
+    /// Whether the selection is one item that can be renamed.
+    var canRenameSelection: Bool {
+        let urls = selectedURLs()
+        return urls.count == 1 && LocationPermissions.canRename(urls[0])
+    }
+
+    /// Whether the selection can be duplicated: copies go into this folder, or beside
+    /// each original in Recents.
+    var canDuplicateSelection: Bool {
+        let urls = selectedURLs()
+        guard !urls.isEmpty else { return false }
+        if folderAcceptsItems { return true }
+        return urls.allSatisfy { LocationPermissions.canAdd(into: $0.deletingLastPathComponent()) }
     }
 
     /// Whether the folder on screen can take new items (paste, drop, New Folder…).

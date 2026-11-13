@@ -378,6 +378,9 @@ extension DetailsTableController: NSMenuDelegate {
 extension DetailsTableController: HoverTableFileActions {
     var hasSelection: Bool { contents.hasSelection }
     var canPaste: Bool { contents.canPaste }
+    var canRemoveSelection: Bool { contents.canRemoveSelection }
+    var canRenameSelection: Bool { contents.canRenameSelection }
+    var canDuplicateSelection: Bool { contents.canDuplicateSelection }
     var selectedFileURLs: [URL] { contents.selectedFileURLs }
 
     func copySelectedItems() { contents.copySelectedItems() }

@@ -51,7 +51,9 @@ final class IconViewController: NSObject, FolderContentsPresenter {
         collectionView.onCopy = { [weak self] in self?.contents.copySelectedItems() }
         collectionView.onPaste = { [weak self] in self?.contents.pasteIntoFolder() }
         collectionView.onDuplicate = { [weak self] in self?.contents.duplicateSelectedItems() }
-        collectionView.canPaste = { Clipboard.shared.canPaste }
+        collectionView.canPaste = { [weak self] in self?.contents.canPaste ?? false }
+        collectionView.canRemove = { [weak self] in self?.contents.canRemoveSelection ?? false }
+        collectionView.canDuplicate = { [weak self] in self?.contents.canDuplicateSelection ?? false }
 
         scrollView.documentView = collectionView
         scrollView.hasVerticalScroller = true
@@ -305,6 +307,8 @@ final class IconCollectionView: NSCollectionView, NSMenuItemValidation {
     var onPaste: (() -> Void)?
     var onDuplicate: (() -> Void)?
     var canPaste: (() -> Bool)?
+    var canRemove: (() -> Bool)?
+    var canDuplicate: (() -> Bool)?
 
     @objc func cut(_ sender: Any?) { onCut?() }
     @objc func copy(_ sender: Any?) { onCopy?() }
@@ -313,8 +317,12 @@ final class IconCollectionView: NSCollectionView, NSMenuItemValidation {
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
-        case #selector(cut(_:)), #selector(copy(_:)), #selector(duplicate(_:)):
+        case #selector(copy(_:)):
             return !(selectedURLs?().isEmpty ?? true)
+        case #selector(cut(_:)):
+            return canRemove?() == true
+        case #selector(duplicate(_:)):
+            return canDuplicate?() == true
         case #selector(paste(_:)):
             return canPaste?() == true
         default:

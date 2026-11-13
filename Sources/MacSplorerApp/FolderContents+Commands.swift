@@ -17,6 +17,7 @@ extension FolderContents {
         let urls = selectedURLs()
         Diag.commands.info("cut: urls=\(urls.count) responder=\(Diag.responder(self), privacy: .public)")
         guard !urls.isEmpty else { return }
+        guard canRemoveSelection else { NSSound.beep(); return }
         Clipboard.shared.set(urls, operation: .cut)
     }
 
@@ -44,6 +45,7 @@ extension FolderContents {
     func trashSelectedItems() {
         let urls = selectedURLs()
         guard !urls.isEmpty, let folder else { return }
+        guard canRemoveSelection else { NSSound.beep(); return }
         // A remote store has no Trash to move things into, so the same keystroke has
         // to ask what the user meant — see RemoteDelete.
         if urls.contains(where: { !$0.isFileURL }) {
@@ -60,8 +62,8 @@ extension FolderContents {
     func deleteRemoteItems(_ urls: [URL], reloading folder: URL) {
         // Ask nothing of a backend that can't delete: offering the choice and then
         // failing on either button is worse than saying so up front.
-        guard Providers.provider(for: urls[0]).capabilities.canWrite else {
-            reportDeleteFailure(ProviderError.deleteUnsupported(urls[0]))
+        if let refused = urls.first(where: { !LocationPermissions.canRemove($0) }) {
+            reportDeleteFailure(ProviderError.deleteUnsupported(refused))
             return
         }
         Task { @MainActor [weak self] in
@@ -97,6 +99,7 @@ extension FolderContents {
     func duplicateSelectedItems() {
         let urls = selectedURLs()
         guard !urls.isEmpty, let folder else { return }
+        guard canDuplicateSelection else { NSSound.beep(); return }
         var names: [String] = []
         var affected: Set<URL> = [folder]
         // In Recents there's no folder to put a copy into, so it goes beside the
@@ -119,6 +122,7 @@ extension FolderContents {
         guard let row = rows.first else { return }
         // Return on ".." goes up rather than renaming (Windows-style).
         if items[row].isParentLink { openItem(items[row]); return }
+        guard LocationPermissions.canRename(items[row].url) else { NSSound.beep(); return }
         beginRenameDeferred(named: items[row].name)
     }
 
@@ -202,7 +206,7 @@ extension FolderContents {
             let isFolder = item.isDirectory && !item.isPackage
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if isFolder, !provider.capabilities.atomicRename,
+                if isFolder, !LocationPermissions.renamesInPlace(item.url),
                    let count = try? await provider.peekCount(at: item.url, limit: 1000),
                    count.items > 1 || count.isPartial,
                    !self.confirmRemoteRename(item.url, from: item.name, to: trimmed, count: count) {
@@ -443,11 +447,15 @@ extension FolderContents {
 
     // Folder commands by URL — for the tree's context menu to call.
 
-    func cutFolder(_ url: URL) { Clipboard.shared.set([url], operation: .cut) }
+    func cutFolder(_ url: URL) {
+        guard LocationPermissions.canRemove(url) else { NSSound.beep(); return }
+        Clipboard.shared.set([url], operation: .cut)
+    }
     func copyFolder(_ url: URL) { Clipboard.shared.set([url], operation: .copy) }
 
     func duplicateFolder(_ url: URL) {
         let parent = url.deletingLastPathComponent()
+        guard LocationPermissions.canAdd(into: parent) else { NSSound.beep(); return }
         do {
             let name = try Providers.provider(for: parent).copy(url, into: parent).lastPathComponent
             finishMutation(affected: [parent], selecting: samePath(parent, folder) ? [name] : [])
@@ -456,6 +464,7 @@ extension FolderContents {
 
     func trashFolder(_ url: URL) {
         let parent = url.deletingLastPathComponent()
+        guard LocationPermissions.canRemove(url) else { NSSound.beep(); return }
         if !url.isFileURL { deleteRemoteItems([url], reloading: parent); return }
         do {
             _ = try Providers.provider(for: url).moveToTrash(url)
@@ -465,6 +474,7 @@ extension FolderContents {
 
     func renameFolder(_ url: URL) {
         let parent = url.deletingLastPathComponent()
+        guard LocationPermissions.canRename(url) else { NSSound.beep(); return }
         guard !samePath(parent, folder) else {
             beginRenameDeferred(named: url.lastPathComponent)
             return
@@ -498,6 +508,8 @@ extension FolderContents {
     }
 
     private func plainDragMoves(_ source: URL, into destination: URL) -> Bool {
+        // Something that can't leave its folder is copied, never moved.
+        guard LocationPermissions.canRemove(source) else { return false }
         let isLocal = { (url: URL) in url.isFileURL || url.scheme == nil }
         if isLocal(source) && isLocal(destination) { return sameVolume(source, as: destination) }
         if isLocal(source) || isLocal(destination) { return false }
@@ -521,7 +533,9 @@ extension FolderContents {
 
     /// Copy or move `urls` into `destination`, resolving name collisions per the
     /// user's preference (silent keep-both, or a Finder-style prompt), then refresh.
-    func performTransfer(_ urls: [URL], into destination: URL, move: Bool, selectLanded: Bool) {
+    func performTransfer(_ urls: [URL], into destination: URL, move requestedMove: Bool, selectLanded: Bool) {
+        // A move out of a place that doesn't let things leave is a copy instead.
+        let move = requestedMove && urls.allSatisfy(LocationPermissions.canRemove)
         // A provider can't read another backend's files, so transfers that cross a
         // backend boundary are bridged here. Into a remote location: every source is
         // uploaded, fetched first if it is itself remote.
@@ -1178,7 +1192,7 @@ extension FolderContents {
             add(menu, "Set Public Address…", #selector(ctxSetPublicAddress(_:)), target)
         }
         menu.addItem(.separator())
-        add(menu, "Cut", #selector(ctxCut(_:)), target)
+        add(menu, "Cut", #selector(ctxCut(_:)), target, enabled: canRemoveSelection)
         add(menu, "Copy", #selector(ctxCopy(_:)), target)
         // Paste belongs in every one of these menus, not only the empty-space one:
         // whether a right-click lands on a row or between rows is luck, and a
@@ -1190,10 +1204,10 @@ extension FolderContents {
         } else {
             add(menu, "Paste", #selector(ctxPaste(_:)), target, enabled: canPaste)
         }
-        add(menu, "Duplicate", #selector(ctxDuplicate(_:)), target)
+        add(menu, "Duplicate", #selector(ctxDuplicate(_:)), target, enabled: canDuplicateSelection)
         menu.addItem(.separator())
-        add(menu, "Rename", #selector(ctxRename(_:)), target)
-        add(menu, "Move to Trash", #selector(ctxTrash(_:)), target)
+        add(menu, "Rename", #selector(ctxRename(_:)), target, enabled: canRenameSelection)
+        add(menu, "Move to Trash", #selector(ctxTrash(_:)), target, enabled: canRemoveSelection)
         menu.addItem(.separator())
         add(menu, "Reveal in Finder", #selector(ctxReveal(_:)), target)
         add(menu, "Copy Path", #selector(ctxCopyPath(_:)), target)

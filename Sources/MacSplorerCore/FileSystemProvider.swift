@@ -22,6 +22,17 @@ public protocol FileSystemProvider {
     /// where something happens. Nil reads as "this location". Default: nil.
     var displayName: String? { get }
 
+    /// What can be done *within* the folder at `url`: whether items can be added to
+    /// it, removed or renamed in it (`canWrite`, `canRename`), and whether renames
+    /// there happen in place (`atomicRename`). Lets one volume hold a read-only area,
+    /// or a top level of fixed containers whose insides are writable. Asked often,
+    /// so answer from the URL alone, never over the network. Default: `capabilities`.
+    ///
+    /// The app asks about the destination folder before putting anything into it,
+    /// and about an item's *parent* before renaming, deleting or moving the item —
+    /// as a Unix folder's permissions govern its entries.
+    func capabilities(at url: URL) -> ProviderCapabilities
+
     // MARK: Enumeration & metadata
     //
     // Async because a remote backend (S3) does network I/O and can fail. Local
@@ -184,6 +195,8 @@ public extension FileSystemProvider {
     func canMoveDirectly(_ source: URL, to destination: URL) -> Bool { false }
 
     var displayName: String? { nil }
+
+    func capabilities(at url: URL) -> ProviderCapabilities { capabilities }
 
     func infoRows(for url: URL) async throws -> [(label: String, value: String)] { [] }
 

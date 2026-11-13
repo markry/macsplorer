@@ -28,6 +28,10 @@ protocol HoverTableFileActions: AnyObject {
     func duplicateSelectedItems()
     var hasSelection: Bool { get }
     var canPaste: Bool { get }
+    /// Whether the selection may be cut or trashed, renamed, or duplicated where it is.
+    var canRemoveSelection: Bool { get }
+    var canRenameSelection: Bool { get }
+    var canDuplicateSelection: Bool { get }
     /// URLs of the currently selected rows (for Quick Look).
     var selectedFileURLs: [URL] { get }
     /// Build the right-click menu for the clicked row (or -1 for empty space).
@@ -220,9 +224,14 @@ final class HoverTableView: NSTableView, NSMenuItemValidation {
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
-        case #selector(copy(_:)), #selector(cut(_:)), #selector(renameItem(_:)),
-             #selector(moveToTrash(_:)), #selector(duplicate(_:)):
+        case #selector(copy(_:)):
             return fileActions?.hasSelection ?? false
+        case #selector(cut(_:)), #selector(moveToTrash(_:)):
+            return fileActions?.canRemoveSelection ?? false
+        case #selector(renameItem(_:)):
+            return fileActions?.canRenameSelection ?? false
+        case #selector(duplicate(_:)):
+            return fileActions?.canDuplicateSelection ?? false
         case #selector(paste(_:)):
             return fileActions?.canPaste ?? false
         default:
