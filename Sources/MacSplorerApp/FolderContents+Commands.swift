@@ -596,10 +596,12 @@ extension FolderContents {
                     choice = all
                 } else {
                     let result = askCollision(name: url.lastPathComponent, in: destination,
-                                              multiple: urls.count > 1)
+                                              multiple: urls.count > 1,
+                                              canReplace: LocationPermissions.canReplace(target))
                     if result.applyToAll { applyToAll = result.choice }
                     choice = result.choice
                 }
+                if choice == .replace && !LocationPermissions.canReplace(target) { choice = .keepBoth }
             }
             if choice == .stop { break }
 
@@ -653,11 +655,13 @@ extension FolderContents {
                             choice = all
                         } else {
                             let result = self.askCollision(name: name, in: destination,
-                                                           multiple: urls.count > 1)
+                                                           multiple: urls.count > 1,
+                                                           canReplace: LocationPermissions.canReplace(target))
                             if result.applyToAll { applyToAll = result.choice }
                             choice = result.choice
                         }
                     }
+                    if choice == .replace && !LocationPermissions.canReplace(target) { choice = .keepBoth }
                     switch choice {
                     case .keepBoth: target = FileOperations.uniqueDestination(forName: name, in: destination)
                     // Replace, but not yet: the provider swaps the file in only once the
@@ -767,11 +771,15 @@ extension FolderContents {
                                 choice = all
                             } else {
                                 let result = self.askCollision(name: name, in: destination,
-                                                               multiple: urls.count > 1)
+                                                               multiple: urls.count > 1,
+                                                               canReplace: LocationPermissions.canReplace(placed))
                                 if result.applyToAll { applyToAll = result.choice }
                                 choice = result.choice
                             }
                         }
+                        // An item that refuses to be replaced is kept, and the copy
+                        // arrives beside it — also when "Apply to All" chose Replace.
+                        if choice == .replace && !LocationPermissions.canReplace(placed) { choice = .keepBoth }
                         if choice == .stop { break }
                         if choice == .keepBoth {
                             placed = await self.uniqueRemoteDestination(forName: name, in: destination,
@@ -953,13 +961,17 @@ extension FolderContents {
         alert.runModal()
     }
 
-    private func askCollision(name: String, in destination: URL,
-                              multiple: Bool) -> (choice: CollisionChoice, applyToAll: Bool) {
+    /// `canReplace` false (the existing item refuses to be replaced) greys out
+    /// Replace and says why.
+    private func askCollision(name: String, in destination: URL, multiple: Bool,
+                              canReplace: Bool = true) -> (choice: CollisionChoice, applyToAll: Bool) {
         let alert = NSAlert()
         alert.messageText = "An item named “\(name)” already exists in “\(destination.lastPathComponent)”."
-        alert.informativeText = "Keep both items, replace the existing one, or cancel?"
+        alert.informativeText = canReplace
+            ? "Keep both items, replace the existing one, or cancel?"
+            : "The existing item can’t be replaced. Keep both items, or cancel?"
         alert.addButton(withTitle: "Keep Both")
-        alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Replace").isEnabled = canReplace
         alert.addButton(withTitle: "Cancel")
         var checkbox: NSButton?
         if multiple {

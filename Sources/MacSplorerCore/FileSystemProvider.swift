@@ -33,6 +33,13 @@ public protocol FileSystemProvider {
     /// as a Unix folder's permissions govern its entries.
     func capabilities(at url: URL) -> ProviderCapabilities
 
+    /// One item's own refusals, for backends that grant rights per item (a "shared
+    /// with me" folder of many owners, a locked file). It can only narrow what the
+    /// item's folder allows, never widen it. Nil — the default, and the answer when
+    /// the provider doesn't know yet — means "as the folder says". Synchronous and
+    /// cheap: answer from the last listing, never over the network.
+    func permissions(of item: URL) -> ItemPermissions?
+
     // MARK: Enumeration & metadata
     //
     // Async because a remote backend (S3) does network I/O and can fail. Local
@@ -197,6 +204,8 @@ public extension FileSystemProvider {
     var displayName: String? { nil }
 
     func capabilities(at url: URL) -> ProviderCapabilities { capabilities }
+
+    func permissions(of item: URL) -> ItemPermissions? { nil }
 
     func infoRows(for url: URL) async throws -> [(label: String, value: String)] { [] }
 

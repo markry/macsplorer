@@ -73,6 +73,40 @@ import MacSplorerCore
         #expect(!LocationPermissions.canRename(url("/box/norename/a.txt")))
     }
 
+    /// A locked file beside a free one, in a folder that allows everything.
+    @Test func oneItemCanRefuseWhatItsFolderAllows() {
+        let locked = url("/box/rw/locked.txt"), free = url("/box/rw/free.txt")
+        #expect(!LocationPermissions.canRename(locked))
+        #expect(!LocationPermissions.canRemove(locked))
+        #expect(!LocationPermissions.canReplace(locked))
+        #expect(LocationPermissions.canRename(free))
+        #expect(LocationPermissions.canRemove(free))
+        #expect(LocationPermissions.canReplace(free))
+        // A selection is refused if any item refuses.
+        #expect(![locked, free].allSatisfy(LocationPermissions.canRemove))
+    }
+
+    /// An item can't widen what its folder refuses: "allow everything" inside a
+    /// read-only folder still allows nothing.
+    @Test func anItemCantWidenItsFolder() {
+        let item = url("/box/ro/generous.txt")
+        #expect(!LocationPermissions.canRename(item))
+        #expect(!LocationPermissions.canRemove(item))
+        #expect(!LocationPermissions.canReplace(item))
+    }
+
+    /// Nil ("not known yet") falls back to the folder, so nothing is refused by mistake.
+    @Test func unknownItemsFollowTheirFolder() {
+        #expect(LocationPermissions.canRename(url("/box/rw/unlisted.txt")))
+    }
+
+    @Test func partialRefusals() {
+        let shared = url("/box/rw/viewer-can-rename.txt")
+        #expect(LocationPermissions.canRename(shared))
+        #expect(!LocationPermissions.canRemove(shared))
+        #expect(!LocationPermissions.canReplace(shared))
+    }
+
     @Test func renameInPlaceIsPerFolderToo() {
         #expect(LocationPermissions.renamesInPlace(url("/box/rw/a/")))
         #expect(!LocationPermissions.renamesInPlace(url("/box/copying/a/")))
@@ -107,6 +141,15 @@ private struct MixedProvider: FileSystemProvider {
             return c
         }
         return capabilities
+    }
+
+    func permissions(of item: URL) -> ItemPermissions? {
+        switch item.lastPathComponent {
+        case "locked.txt": return ItemPermissions(canRename: false, canRemove: false, canChangeContents: false)
+        case "generous.txt": return ItemPermissions()
+        case "viewer-can-rename.txt": return ItemPermissions(canRemove: false, canChangeContents: false)
+        default: return nil
+        }
     }
 
     private func caps(write: Bool, atomic: Bool) -> ProviderCapabilities {
