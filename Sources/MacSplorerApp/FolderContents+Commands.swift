@@ -29,8 +29,8 @@ extension FolderContents {
         let (urls, move) = Clipboard.shared.pasteSource()
         Diag.commands.info("paste into folder: urls=\(urls.count) move=\(move)")
         guard !urls.isEmpty else { return }
-        performTransfer(urls, into: directory, move: move, selectLanded: samePath(directory, folder))
-        if move { Clipboard.shared.clearAfterMove() }
+        let moved = performTransfer(urls, into: directory, move: move, selectLanded: samePath(directory, folder))
+        if moved { Clipboard.shared.clearAfterMove() }
     }
 
     func pasteIntoFolder() {
@@ -38,8 +38,8 @@ extension FolderContents {
         let (urls, move) = Clipboard.shared.pasteSource()
         Diag.commands.info("paste: urls=\(urls.count) move=\(move) responder=\(Diag.responder(self), privacy: .public)")
         guard !urls.isEmpty else { return }
-        performTransfer(urls, into: folder, move: move, selectLanded: true)
-        if move { Clipboard.shared.clearAfterMove() }
+        let moved = performTransfer(urls, into: folder, move: move, selectLanded: true)
+        if moved { Clipboard.shared.clearAfterMove() }
     }
 
     func trashSelectedItems() {
@@ -183,6 +183,9 @@ extension FolderContents {
                 Diag.rename.error("beginRenameDeferred: the new item is not in the listing")
                 return
             }
+            // Every inline edit starts here, including the one after New Folder:
+            // where renaming isn't allowed, the new item keeps its default name.
+            guard LocationPermissions.canRename(self.items[row].url) else { return }
             Diag.rename.info("beginRenameDeferred: row=\(row) attempt=\(attempt)")
             self.presenter?.beginRename(at: row)
         }
@@ -195,6 +198,8 @@ extension FolderContents {
         let item = items[index]
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != item.name else { return false }
+        // Asked again at commit: the place may have changed since the edit began.
+        guard LocationPermissions.canRename(item.url) else { NSSound.beep(); return false }
         // A remote rename needs the network: let the edit close now, then reload
         // with the result — the new name on success, the old one (and why) if not.
         // Where rename isn't atomic (S3: a copy of everything plus a delete), a folder
@@ -533,15 +538,20 @@ extension FolderContents {
 
     /// Copy or move `urls` into `destination`, resolving name collisions per the
     /// user's preference (silent keep-both, or a Finder-style prompt), then refresh.
-    func performTransfer(_ urls: [URL], into destination: URL, move requestedMove: Bool, selectLanded: Bool) {
+    /// Returns whether it moves: false when a requested move became a copy because
+    /// something can't leave its folder, so a Paste after Cut keeps the clipboard.
+    @discardableResult
+    func performTransfer(_ urls: [URL], into destination: URL, move requestedMove: Bool,
+                         selectLanded: Bool) -> Bool {
         // A move out of a place that doesn't let things leave is a copy instead.
         let move = requestedMove && urls.allSatisfy(LocationPermissions.canRemove)
+        if move != requestedMove { Diag.transfer.info("transfer: move became a copy") }
         // A provider can't read another backend's files, so transfers that cross a
         // backend boundary are bridged here. Into a remote location: every source is
         // uploaded, fetched first if it is itself remote.
         guard destination.isFileURL || destination.scheme == nil else {
             uploadTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
-            return
+            return move
         }
         // Out of a remote location into a local folder: a download.
         let remoteSources = urls.filter { !($0.isFileURL || $0.scheme == nil) }
@@ -549,7 +559,7 @@ extension FolderContents {
             downloadTransfer(remoteSources, into: destination, selectLanded: selectLanded)
         }
         let urls = urls.filter { $0.isFileURL || $0.scheme == nil }
-        guard !urls.isEmpty else { return }
+        guard !urls.isEmpty else { return move }
 
         var landed: [String] = []
         var affected: Set<URL> = [destination]
@@ -607,6 +617,7 @@ extension FolderContents {
         }
         finishMutation(affected: affected, selecting: selectLanded ? landed : [])
         if let failure { reportTransferFailure(failure.name, error: failure.error, moving: move) }
+        return move
     }
 
     /// Copy files and folders out of a remote provider into a local folder by
@@ -1094,8 +1105,10 @@ extension FolderContents {
                                   action: #selector(performRightDrop(_:)), keyEquivalent: "")
         moveItem.target = self
         moveItem.representedObject = RightDropInfo(urls: urls, destination: destination, move: true)
+        // Offered only when every item may leave its folder; otherwise it would copy.
+        moveItem.isEnabled = urls.allSatisfy(LocationPermissions.canRemove)
 
-        let defaultItem = crossVolume ? moveItem : copyItem
+        let defaultItem = (crossVolume && moveItem.isEnabled) ? moveItem : copyItem
         defaultItem.attributedTitle = NSAttributedString(
             string: defaultItem.title,
             attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])

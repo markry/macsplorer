@@ -25,13 +25,31 @@ public final class S3Provider: FileSystemProvider {
 
     public var capabilities: ProviderCapabilities {
         ProviderCapabilities(
-            canWrite: true,           // upload and delete; rename/copy-in-place are not
-            canRename: false,
-            atomicRename: false,      // S3 rename is emulated (copy+delete) — later phase
+            canWrite: true,           // upload, create and delete
+            canRename: true,          // files and folders; see renameWithProgress
+            atomicRename: false,      // emulated: a copy of everything, then a delete
             hasTrash: false,          // S3 has no Trash; deletes are permanent
             emitsChangeEvents: false, // no change events → the UI offers manual Refresh
             needsDownloadToOpen: true,// opening needs a local temp copy (Phase 2)
             maxSinglePutBytes: nil)
+    }
+
+    /// Per level: inside a bucket everything can be written and renamed. A profile
+    /// holds buckets, which can be created and deleted but never renamed (S3 has no
+    /// bucket rename). The S3 root lists profiles, which are credential settings on
+    /// this Mac, not things stored in S3.
+    public func capabilities(at url: URL) -> ProviderCapabilities {
+        var caps = capabilities
+        switch S3Location.parse(url) {
+        case .prefix:
+            break
+        case .profile:
+            caps.canRename = false
+        case .root, .none:
+            caps.canWrite = false
+            caps.canRename = false
+        }
+        return caps
     }
 
     // MARK: - Enumeration & metadata

@@ -36,6 +36,32 @@ import MacSplorerCore
         #expect(LocationPermissions.canAdd(into: url("/box/")))
     }
 
+    @Test func anAccountRootBelongsToItsSchemeRoot() {
+        // The scheme root (which lists accounts) is read-only, so an account can't be
+        // removed or renamed, however writable its own contents are.
+        #expect(LocationPermissions.parent(of: URL(string: "mixedtest://acct/")!)
+                == URL(string: "mixedtest:///")!)
+        #expect(!LocationPermissions.canRemove(URL(string: "mixedtest://acct/")!))
+        #expect(!LocationPermissions.canRename(URL(string: "mixedtest://acct/")!))
+    }
+
+    @Test func rootsHaveNoParent() {
+        #expect(LocationPermissions.parent(of: URL(string: "mixedtest:///")!) == nil)
+        #expect(LocationPermissions.parent(of: URL(fileURLWithPath: "/")) == nil)
+        #expect(!LocationPermissions.canRemove(URL(fileURLWithPath: "/")))
+    }
+
+    @Test func parentsOfNestedFoldersIgnoreTrailingSlashes() {
+        #expect(LocationPermissions.parent(of: url("/box/ro/a/")) == url("/box/ro/"))
+        #expect(LocationPermissions.parent(of: url("/box/ro/a")) == url("/box/ro/"))
+    }
+
+    @Test func writableButNotRenamableAllowsAddingButNotRenaming() {
+        #expect(LocationPermissions.canAdd(into: url("/box/norename/")))
+        #expect(LocationPermissions.canRemove(url("/box/norename/a.txt")))
+        #expect(!LocationPermissions.canRename(url("/box/norename/a.txt")))
+    }
+
     @Test func renameInPlaceIsPerFolderToo() {
         #expect(LocationPermissions.renamesInPlace(url("/box/rw/a/")))
         #expect(!LocationPermissions.renamesInPlace(url("/box/copying/a/")))
@@ -57,10 +83,18 @@ private struct MixedProvider: FileSystemProvider {
     var capabilities: ProviderCapabilities { caps(write: true, atomic: true) }
 
     func capabilities(at url: URL) -> ProviderCapabilities {
+        // The scheme root lists accounts and is fixed; an account's own root holds
+        // fixed containers.
+        if (url.host ?? "").isEmpty { return caps(write: false, atomic: true) }
         let parts = url.pathComponents.filter { $0 != "/" }
         if parts.isEmpty { return caps(write: false, atomic: true) }
         if parts.count >= 2 && parts[1] == "ro" { return caps(write: false, atomic: true) }
         if parts.count >= 2 && parts[1] == "copying" { return caps(write: true, atomic: false) }
+        if parts.count >= 2 && parts[1] == "norename" {
+            var c = caps(write: true, atomic: true)
+            c.canRename = false
+            return c
+        }
         return capabilities
     }
 

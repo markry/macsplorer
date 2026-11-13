@@ -189,7 +189,8 @@ extension IconViewController: NSCollectionViewDataSource, NSCollectionViewDelega
 
     func collectionView(_ collectionView: NSCollectionView, acceptDrop draggingInfo: NSDraggingInfo,
                         indexPath: IndexPath, dropOperation: NSCollectionView.DropOperation) -> Bool {
-        guard let folder = contents.folder else { return false }
+        // Checked again at the drop, as the list and tree do: validation came earlier.
+        guard let folder = contents.folder, contents.accepts(itemsInto: folder) else { return false }
         let urls = draggingInfo.draggingPasteboard.readObjects(
             forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
         if !urls.isEmpty {
