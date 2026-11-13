@@ -107,7 +107,10 @@ extension FolderContents {
         // one, and behaviour is unchanged.
         let besideOriginal = !folderAcceptsItems
         for url in urls {
-            let target = besideOriginal ? url.deletingLastPathComponent() : folder
+            guard let target = besideOriginal ? LocationPermissions.parent(of: url) : folder else {
+                NSSound.beep()
+                continue
+            }
             do {
                 let copy = try Providers.provider(for: target).copy(url, into: target)
                 if samePath(target, folder) { names.append(copy.lastPathComponent) }
@@ -459,8 +462,10 @@ extension FolderContents {
     func copyFolder(_ url: URL) { Clipboard.shared.set([url], operation: .copy) }
 
     func duplicateFolder(_ url: URL) {
-        let parent = url.deletingLastPathComponent()
-        guard LocationPermissions.canAdd(into: parent) else { NSSound.beep(); return }
+        // The semantic parent: an account's root sits in its scheme's root, not in
+        // `scheme://account/../`.
+        guard let parent = LocationPermissions.parent(of: url),
+              LocationPermissions.canAdd(into: parent) else { NSSound.beep(); return }
         do {
             let name = try Providers.provider(for: parent).copy(url, into: parent).lastPathComponent
             finishMutation(affected: [parent], selecting: samePath(parent, folder) ? [name] : [])
@@ -553,13 +558,15 @@ extension FolderContents {
             uploadTransfer(urls, into: destination, move: move, selectLanded: selectLanded)
             return move
         }
-        // Out of a remote location into a local folder: a download.
+        // Out of a remote location into a local folder: a download, which always
+        // copies — so the batch as a whole isn't a move, and a Cut clipboard stays.
         let remoteSources = urls.filter { !($0.isFileURL || $0.scheme == nil) }
         if !remoteSources.isEmpty {
             downloadTransfer(remoteSources, into: destination, selectLanded: selectLanded)
         }
         let urls = urls.filter { $0.isFileURL || $0.scheme == nil }
-        guard !urls.isEmpty else { return move }
+        let movesAll = move && remoteSources.isEmpty
+        guard !urls.isEmpty else { return movesAll }
 
         var landed: [String] = []
         var affected: Set<URL> = [destination]
@@ -617,7 +624,7 @@ extension FolderContents {
         }
         finishMutation(affected: affected, selecting: selectLanded ? landed : [])
         if let failure { reportTransferFailure(failure.name, error: failure.error, moving: move) }
-        return move
+        return movesAll
     }
 
     /// Copy files and folders out of a remote provider into a local folder by

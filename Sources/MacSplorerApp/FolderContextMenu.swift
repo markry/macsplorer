@@ -38,7 +38,7 @@ enum FolderContextMenu {
         // renaming or deleting it (a question for the folder it's in).
         let canAdd = LocationPermissions.canAdd(into: url)
         let canRemove = LocationPermissions.canRemove(url)
-        let canAddBeside = LocationPermissions.canAdd(into: url.deletingLastPathComponent())
+        let canAddBeside = LocationPermissions.parent(of: url).map(LocationPermissions.canAdd(into:)) ?? false
         add("Open", .open)
         add("Open in New Window", .openInNewWindow)
         // Recents is a view, not a folder on disk: it can't be renamed, trashed,

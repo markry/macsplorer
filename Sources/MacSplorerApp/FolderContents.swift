@@ -450,7 +450,9 @@ final class FolderContents: NSObject {
         let urls = selectedURLs()
         guard !urls.isEmpty else { return false }
         if folderAcceptsItems { return true }
-        return urls.allSatisfy { LocationPermissions.canAdd(into: $0.deletingLastPathComponent()) }
+        return urls.allSatisfy { url in
+            LocationPermissions.parent(of: url).map(LocationPermissions.canAdd(into:)) ?? false
+        }
     }
 
     /// Whether the folder on screen can take new items (paste, drop, New Folder…).

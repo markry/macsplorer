@@ -45,6 +45,17 @@ import MacSplorerCore
         #expect(!LocationPermissions.canRename(URL(string: "mixedtest://acct/")!))
     }
 
+    /// Even when an account's own root takes new items, the account itself is listed
+    /// by the read-only scheme root, so it can't be removed, renamed or duplicated.
+    @Test func aWritableAccountRootStillCantLeaveTheSchemeRoot() {
+        let open = URL(string: "mixedtest://openacct/")!
+        #expect(LocationPermissions.canAdd(into: open))
+        #expect(!LocationPermissions.canRemove(open))
+        #expect(!LocationPermissions.canRename(open))
+        let parent = LocationPermissions.parent(of: open)
+        #expect(parent.map(LocationPermissions.canAdd(into:)) == false)
+    }
+
     @Test func rootsHaveNoParent() {
         #expect(LocationPermissions.parent(of: URL(string: "mixedtest:///")!) == nil)
         #expect(LocationPermissions.parent(of: URL(fileURLWithPath: "/")) == nil)
@@ -87,7 +98,7 @@ private struct MixedProvider: FileSystemProvider {
         // fixed containers.
         if (url.host ?? "").isEmpty { return caps(write: false, atomic: true) }
         let parts = url.pathComponents.filter { $0 != "/" }
-        if parts.isEmpty { return caps(write: false, atomic: true) }
+        if parts.isEmpty { return caps(write: url.host == "openacct", atomic: true) }
         if parts.count >= 2 && parts[1] == "ro" { return caps(write: false, atomic: true) }
         if parts.count >= 2 && parts[1] == "copying" { return caps(write: true, atomic: false) }
         if parts.count >= 2 && parts[1] == "norename" {
