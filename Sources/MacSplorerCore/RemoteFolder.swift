@@ -97,6 +97,49 @@ public enum RemoteFolder {
         return (bytes, files)
     }
 
+    /// Keep Both names for `name`, in order: "name copy", "name copy 2", … — the same
+    /// form a local copy uses, with the extension kept after the suffix.
+    public static func keepBothNames(for name: String, isFolder: Bool) -> [String] {
+        let ext = isFolder ? "" : (name as NSString).pathExtension
+        let base = ext.isEmpty ? name : (name as NSString).deletingPathExtension
+        return (1...999).map { counter in
+            let suffix = counter == 1 ? " copy" : " copy \(counter)"
+            return ext.isEmpty ? "\(base)\(suffix)" : "\(base)\(suffix).\(ext)"
+        }
+    }
+
+    /// Where each file of a folder copy lands, decided for the whole set before any
+    /// is written. A file whose existing destination refuses to be replaced goes
+    /// beside it under a Keep Both name that is free at the destination AND not the
+    /// name of any other incoming file or earlier choice — otherwise a later file
+    /// would overwrite the redirected one. Every result is distinct.
+    public static func planDestinations(_ targets: [URL],
+                                        exists: (URL) async -> Bool) async -> [URL] {
+        var taken = Set(targets.map(\.absoluteString))
+        var planned: [URL] = []
+        for target in targets {
+            guard LocationPermissions.placement(for: target) == .besideExisting,
+                  await exists(target) else {
+                planned.append(target)
+                continue
+            }
+            let folder = target.deletingLastPathComponent()
+            var choice: URL?
+            for name in keepBothNames(for: target.lastPathComponent, isFolder: false) {
+                let candidate = folder.appendingPathComponent(name, isDirectory: false)
+                if !taken.contains(candidate.absoluteString), !(await exists(candidate)) {
+                    choice = candidate
+                    break
+                }
+            }
+            let landed = choice ?? folder.appendingPathComponent(
+                UUID().uuidString + ((target.pathExtension.isEmpty) ? "" : ".\(target.pathExtension)"))
+            taken.insert(landed.absoluteString)
+            planned.append(landed)
+        }
+        return planned
+    }
+
     /// The URL `relative` names beneath `folder`, its last component a file.
     public static func url(_ relative: String, beneath folder: URL) -> URL {
         var url = folder

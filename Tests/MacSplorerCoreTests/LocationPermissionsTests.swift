@@ -117,6 +117,30 @@ import MacSplorerCore
         #expect(LocationPermissions.placement(for: url("/box/ro/deeper/x.txt")) == .refused)
     }
 
+    /// Codex's case: a protected "a" is kept, and the incoming "a" must not be
+    /// redirected to "a copy" when an incoming "a copy" will be written there next.
+    @Test func keepBothNamesNeverCollideWithOtherIncomingFiles() async {
+        let locked = url("/box/rw/locked"), lockedCopy = url("/box/rw/locked copy")
+        let existing: Set<String> = [locked.absoluteString]
+        let planned = await RemoteFolder.planDestinations([locked, lockedCopy]) {
+            existing.contains($0.absoluteString)
+        }
+        #expect(planned == [url("/box/rw/locked copy 2"), lockedCopy])
+        #expect(Set(planned.map(\.absoluteString)).count == planned.count)
+    }
+
+    @Test func keepBothSkipsNamesAlreadyAtTheDestination() async {
+        let locked = url("/box/rw/locked.txt")
+        let existing: Set<String> = [locked.absoluteString, url("/box/rw/locked copy.txt").absoluteString]
+        let planned = await RemoteFolder.planDestinations([locked]) { existing.contains($0.absoluteString) }
+        #expect(planned == [url("/box/rw/locked copy 2.txt")])
+    }
+
+    @Test func keepBothNamesKeepTheExtension() {
+        #expect(Array(RemoteFolder.keepBothNames(for: "a.txt", isFolder: false).prefix(2)) == ["a copy.txt", "a copy 2.txt"])
+        #expect(RemoteFolder.keepBothNames(for: "a.b", isFolder: true).first == "a.b copy")
+    }
+
     @Test func renameInPlaceIsPerFolderToo() {
         #expect(LocationPermissions.renamesInPlace(url("/box/rw/a/")))
         #expect(!LocationPermissions.renamesInPlace(url("/box/copying/a/")))
@@ -155,7 +179,7 @@ private struct MixedProvider: FileSystemProvider {
 
     func permissions(of item: URL) -> ItemPermissions? {
         switch item.lastPathComponent {
-        case "locked.txt": return ItemPermissions(canRename: false, canRemove: false, canChangeContents: false)
+        case "locked.txt", "locked": return ItemPermissions(canRename: false, canRemove: false, canChangeContents: false)
         case "generous.txt": return ItemPermissions()
         case "viewer-can-rename.txt": return ItemPermissions(canRemove: false, canChangeContents: false)
         default: return nil

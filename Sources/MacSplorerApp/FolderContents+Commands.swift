@@ -876,15 +876,20 @@ extension FolderContents {
         let empties = listing.emptyFolders.map { relative in
             relative.isEmpty ? destination : RemoteFolder.url(relative + "/", beneath: destination)
         }
-        // Every landing place is checked before anything is written.
-        try Self.checkMergeTargets(listing.files.map { RemoteFolder.url($0.relative, beneath: destination) } + empties)
+        let targets = listing.files.map { RemoteFolder.url($0.relative, beneath: destination) }
+        // Every landing place is checked, and every destination name settled, before
+        // anything is written.
+        try Self.checkMergeTargets(targets + empties)
+        let planned = await RemoteFolder.planDestinations(targets) { await provider.exists($0) }
         for empty in empties {
+            // A folder already there needs nothing created, and rewriting it could
+            // touch an item that refuses to be changed.
+            if await provider.exists(empty) { continue }
             _ = try await provider.createFolder(in: empty.deletingLastPathComponent(),
                                                 named: empty.lastPathComponent)
         }
-        for (file, relative) in listing.files {
+        for ((file, relative), placed) in zip(listing.files, planned) {
             try Task.checkCancellation()
-            let placed = await mergeTarget(RemoteFolder.url(relative, beneath: destination), provider: provider)
             progress.advance(items: 0, detail: "“\(relative)”")
             if await provider.canCopyDirectly(file, to: placed) {
                 try await provider.copyDirectly(file, to: placed, progress: nil)
@@ -905,9 +910,10 @@ extension FolderContents {
     /// a prefix, so a folder with nothing in it has nothing to store.
     private func uploadFolder(_ folder: URL, to destination: URL, provider: FileSystemProvider) async throws {
         let files = Self.files(beneath: folder)
-        try Self.checkMergeTargets(files.map { RemoteFolder.url($0.relative, beneath: destination) })
-        for (file, relative) in files {
-            let placed = await mergeTarget(RemoteFolder.url(relative, beneath: destination), provider: provider)
+        let targets = files.map { RemoteFolder.url($0.relative, beneath: destination) }
+        try Self.checkMergeTargets(targets)
+        let planned = await RemoteFolder.planDestinations(targets) { await provider.exists($0) }
+        for ((file, relative), placed) in zip(files, planned) {
             onStatus?("Uploading “\(relative)”…")
             try await provider.upload(file, to: placed)
         }
@@ -924,16 +930,6 @@ extension FolderContents {
         }
     }
 
-    /// Where one file of a folder copy goes: `target`, unless an item already there
-    /// refuses to be replaced — then beside it under a new name, as Keep Both does,
-    /// so a merge never overwrites a protected file.
-    private func mergeTarget(_ target: URL, provider: FileSystemProvider) async -> URL {
-        guard LocationPermissions.placement(for: target) == .besideExisting,
-              await provider.exists(target) else { return target }
-        return await uniqueRemoteDestination(forName: target.lastPathComponent,
-                                             in: target.deletingLastPathComponent(),
-                                             isFolder: false, provider: provider)
-    }
 
     /// Every regular file beneath `folder`, with its path relative to it. Symbolic links
     /// are skipped so an upload can't follow one out of the folder. Collected up front,
@@ -961,10 +957,7 @@ extension FolderContents {
     private func uniqueRemoteDestination(forName name: String, in directory: URL, isFolder: Bool,
                                          provider: FileSystemProvider) async -> URL {
         let ext = isFolder ? "" : (name as NSString).pathExtension
-        let base = ext.isEmpty ? name : (name as NSString).deletingPathExtension
-        for counter in 1...999 {
-            let suffix = counter == 1 ? " copy" : " copy \(counter)"
-            let candidate = ext.isEmpty ? "\(base)\(suffix)" : "\(base)\(suffix).\(ext)"
+        for candidate in RemoteFolder.keepBothNames(for: name, isFolder: isFolder) {
             let url = directory.appendingPathComponent(candidate, isDirectory: isFolder)
             if !(await provider.exists(url)) { return url }
         }
