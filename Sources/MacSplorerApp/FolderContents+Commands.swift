@@ -874,13 +874,15 @@ extension FolderContents {
         let source = Providers.provider(for: folder)
         let listing = try await RemoteFolder.contents(of: folder, provider: source)
         let empties = listing.emptyFolders.map { relative in
-            relative.isEmpty ? destination : RemoteFolder.url(relative + "/", beneath: destination)
+            relative.isEmpty ? destination : RemoteFolder.folderURL(relative, beneath: destination)
         }
         let targets = listing.files.map { RemoteFolder.url($0.relative, beneath: destination) }
         // Every landing place is checked, and every destination name settled, before
         // anything is written.
         try Self.checkMergeTargets(targets + empties)
-        let planned = await RemoteFolder.planDestinations(targets) { await provider.exists($0) }
+        let planned = await RemoteFolder.planDestinations(targets, reserving: empties) {
+            await provider.exists($0)
+        }
         for empty in empties {
             // A folder already there needs nothing created, and rewriting it could
             // touch an item that refuses to be changed.

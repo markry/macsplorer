@@ -24,6 +24,8 @@ final class FolderLocationsWindowController: NSWindowController,
     private let addCurrentButton = NSButton()
     private let removeButton = NSButton()
     private var enabledCheckbox: NSButton?
+    /// The provider's further choices, one radio group per option.
+    private var optionsView: NSStackView?
 
     var onClose: (() -> Void)?
 
@@ -107,6 +109,17 @@ final class FolderLocationsWindowController: NSWindowController,
             views.append(box)
         }
 
+        // Further choices: one radio group per option, below the switch.
+        if !locations.options.isEmpty {
+            let stack = NSStackView(views: locations.options.enumerated().map { makeOptionGroup($1, index: $0) })
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = 14
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            optionsView = stack
+            views.append(stack)
+        }
+
         views.forEach { content.addSubview($0) }
         let pad: CGFloat = 16
         var constraints: [NSLayoutConstraint] = [
@@ -128,16 +141,35 @@ final class FolderLocationsWindowController: NSWindowController,
             done.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -pad),
             done.centerYAnchor.constraint(equalTo: addButton.centerYAnchor),
         ]
+        // Stack upward from the buttons: options (if any), then the switch (if any),
+        // then the folder list fills what's left.
+        var above: NSView = addButton
+        var gap: CGFloat = 12
+        if let options = optionsView {
+            constraints += [
+                options.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: pad),
+                options.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -pad),
+                options.bottomAnchor.constraint(equalTo: above.topAnchor, constant: -gap),
+            ]
+            above = options
+            gap = 14
+        }
         if let box = enabledCheckbox {
             constraints += [
                 box.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: pad),
-                box.bottomAnchor.constraint(equalTo: addButton.topAnchor, constant: -12),
-                scroll.bottomAnchor.constraint(equalTo: box.topAnchor, constant: -10),
+                box.bottomAnchor.constraint(equalTo: above.topAnchor, constant: -gap),
             ]
-        } else {
-            constraints.append(scroll.bottomAnchor.constraint(equalTo: addButton.topAnchor, constant: -12))
+            above = box
+            gap = 10
         }
+        constraints.append(scroll.bottomAnchor.constraint(equalTo: above.topAnchor, constant: -gap))
         NSLayoutConstraint.activate(constraints)
+        // Grow the window by what the options need, so the folder list keeps its room.
+        if let options = optionsView, let window {
+            var size = window.contentLayoutRect.size
+            size.height += options.fittingSize.height + 14
+            window.setContentSize(size)
+        }
         updateButtons()
         updateCurrentFolderTitle()
     }
@@ -206,6 +238,50 @@ final class FolderLocationsWindowController: NSWindowController,
         paths.remove(at: row)
         tableView.reloadData()
         updateButtons()
+    }
+
+    /// A titled group of radio buttons for one option, the stored answer selected.
+    /// Each group sits in its own view, which is what keeps radio groups separate.
+    private func makeOptionGroup(_ option: ProviderOption, index: Int) -> NSView {
+        let title = NSTextField(wrappingLabelWithString: option.title)
+        title.font = .systemFont(ofSize: 12, weight: .semibold)
+        title.preferredMaxLayoutWidth = 540   // the window's width, less its margins
+        var rows: [NSView] = [title]
+        let current = option.current()
+        for (choiceIndex, choice) in option.choices.enumerated() {
+            let radio = NSButton(radioButtonWithTitle: choice.title, target: self,
+                                 action: #selector(optionChosen(_:)))
+            radio.state = choice.id == current ? .on : .off
+            radio.identifier = NSUserInterfaceItemIdentifier("\(index):\(choiceIndex)")
+            rows.append(radio)
+            if let note = choice.note {
+                let label = NSTextField(wrappingLabelWithString: note)
+                label.font = .systemFont(ofSize: 11)
+                label.textColor = .secondaryLabelColor
+                label.preferredMaxLayoutWidth = 520
+                // Indented under the radio's title.
+                let indent = NSStackView(views: [label])
+                indent.edgeInsets = NSEdgeInsets(top: -2, left: 20, bottom: 0, right: 0)
+                rows.append(indent)
+            }
+        }
+        let group = NSStackView(views: rows)
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 4
+        group.setCustomSpacing(6, after: title)
+        return group
+    }
+
+    @objc private func optionChosen(_ sender: NSButton) {
+        let parts = sender.identifier?.rawValue.split(separator: ":").compactMap { Int($0) } ?? []
+        guard parts.count == 2, locations.options.indices.contains(parts[0]) else { return }
+        let option = locations.options[parts[0]]
+        guard option.choices.indices.contains(parts[1]) else { return }
+        let choice = option.choices[parts[1]].id
+        guard choice != option.current() else { return }
+        option.set(choice)
+        locations.optionChanged?(option.defaultsKey, choice)
     }
 
     @objc private func toggleEnabled() {

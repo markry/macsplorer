@@ -380,13 +380,24 @@ public struct ProviderLocations {
     public let setEnabled: ((Bool) -> Void)?
     /// Re-read the locations and refresh anything showing them. Called after an edit.
     public let apply: () -> Void
+    /// Further choices, shown in the same window below the toggle, each a question
+    /// with two to five answers. The provider reads its answer when it needs it
+    /// (`ProviderOption.current()`).
+    public let options: [ProviderOption]
+    /// Called after the user picks a different answer: the option's `defaultsKey`
+    /// and the new choice's `id`. Optional.
+    public let optionChanged: ((_ key: String, _ choice: String) -> Void)?
 
     public init(menuTitle: String, windowTitle: String, explanation: String,
                 defaultsKey: String, suggestedFolder: URL? = nil,
                 toggleTitle: String? = nil,
                 isEnabled: (() -> Bool)? = nil,
                 setEnabled: ((Bool) -> Void)? = nil,
+                options: [ProviderOption] = [],
+                optionChanged: ((_ key: String, _ choice: String) -> Void)? = nil,
                 apply: @escaping () -> Void) {
+        self.options = options
+        self.optionChanged = optionChanged
         self.menuTitle = menuTitle
         self.windowTitle = windowTitle
         self.explanation = explanation

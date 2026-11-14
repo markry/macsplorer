@@ -136,6 +136,58 @@ import MacSplorerCore
         #expect(planned == [url("/box/rw/locked copy 2.txt")])
     }
 
+    /// Codex's second round: names a forgiving destination treats as one item.
+    @Test func keepBothIgnoresCaseUnicodeAndEncoding() async {
+        let locked = url("/box/rw/locked")
+        let existing: Set<String> = [RemoteFolder.identityKey(locked)]
+        let exists: (URL) async -> Bool = { existing.contains(RemoteFolder.identityKey($0)) }
+        // Another incoming file whose name differs only by case.
+        #expect(await RemoteFolder.planDestinations([locked, url("/box/rw/LOCKED%20copy")], exists: exists)
+                .first == url("/box/rw/locked copy 2"))
+        // …only by percent-encoding.
+        #expect(await RemoteFolder.planDestinations([locked, url("/box/rw/%6Cocked%20copy")], exists: exists)
+                .first == url("/box/rw/locked copy 2"))
+    }
+
+    @Test func identityKeysFoldCaseCompositionAndEncoding() {
+        let composed = URL(string: "x://h/caf%C3%A9/")!          // é as one code point
+        let decomposed = URL(string: "x://h/Cafe%CC%81")!        // e + combining accent
+        #expect(RemoteFolder.identityKey(composed) == RemoteFolder.identityKey(decomposed))
+        #expect(RemoteFolder.identityKey(URL(string: "x://h/a%20b")!) == RemoteFolder.identityKey(URL(string: "x://h/%41%20B")!))
+        // Different accounts stay different.
+        #expect(RemoteFolder.identityKey(URL(string: "x://alice@h/a")!) != RemoteFolder.identityKey(URL(string: "x://bob@h/a")!))
+    }
+
+    /// A generated name must not take the place of an incoming folder: one holding
+    /// files, or an empty one.
+    @Test func keepBothAvoidsIncomingFolders() async {
+        let locked = url("/box/rw/locked")
+        let existing: Set<String> = [RemoteFolder.identityKey(locked)]
+        let exists: (URL) async -> Bool = { existing.contains(RemoteFolder.identityKey($0)) }
+        let withChild = await RemoteFolder.planDestinations([locked, url("/box/rw/locked copy/child")], exists: exists)
+        #expect(withChild.first == url("/box/rw/locked copy 2"))
+        let withEmpty = await RemoteFolder.planDestinations(
+            [locked], reserving: [url("/box/rw/locked copy/")], exists: exists)
+        #expect(withEmpty.first == url("/box/rw/locked copy 2"))
+    }
+
+    /// …nor of a folder already at the destination.
+    @Test func keepBothAvoidsExistingFoldersAtTheDestination() async {
+        let locked = url("/box/rw/locked")
+        let existing: Set<String> = [RemoteFolder.identityKey(locked)]
+        let folders: Set<String> = [url("/box/rw/locked copy/").absoluteString]
+        let planned = await RemoteFolder.planDestinations([locked]) { candidate in
+            existing.contains(RemoteFolder.identityKey(candidate)) || folders.contains(candidate.absoluteString)
+        }
+        #expect(planned == [url("/box/rw/locked copy 2")])
+    }
+
+    @Test func folderURLsKeepTheirTrailingSlash() {
+        let empty = RemoteFolder.folderURL("reports/empty", beneath: url("/box/rw/"))
+        #expect(empty.hasDirectoryPath)
+        #expect(empty.absoluteString.hasSuffix("/reports/empty/"))
+    }
+
     @Test func keepBothNamesKeepTheExtension() {
         #expect(Array(RemoteFolder.keepBothNames(for: "a.txt", isFolder: false).prefix(2)) == ["a copy.txt", "a copy 2.txt"])
         #expect(RemoteFolder.keepBothNames(for: "a.b", isFolder: true).first == "a.b copy")

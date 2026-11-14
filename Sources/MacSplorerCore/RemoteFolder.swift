@@ -110,12 +110,28 @@ public enum RemoteFolder {
 
     /// Where each file of a folder copy lands, decided for the whole set before any
     /// is written. A file whose existing destination refuses to be replaced goes
-    /// beside it under a Keep Both name that is free at the destination AND not the
-    /// name of any other incoming file or earlier choice — otherwise a later file
-    /// would overwrite the redirected one. Every result is distinct.
-    public static func planDestinations(_ targets: [URL],
+    /// beside it under a Keep Both name that is free at the destination — as a file
+    /// or a folder — and that no part of the incoming tree will use: not another
+    /// incoming file, not an incoming folder (`folders`, the empty ones) and not a
+    /// folder any incoming file sits in. Otherwise a later write would overwrite the
+    /// redirected file, or need its name as a folder.
+    ///
+    /// Names are compared as a forgiving destination would (`identityKey`): case,
+    /// Unicode composition and percent-encoding don't distinguish them. On a strict
+    /// destination that only makes the chosen name more cautious ("a copy 2"); it
+    /// never makes two writes land on one item.
+    public static func planDestinations(_ targets: [URL], reserving folders: [URL] = [],
                                         exists: (URL) async -> Bool) async -> [URL] {
-        var taken = Set(targets.map(\.absoluteString))
+        var taken = Set<String>()
+        for target in targets {
+            taken.insert(identityKey(target))
+            var ancestor = target.deletingLastPathComponent()
+            while !LocationIdentity.components(ancestor).isEmpty, taken.insert(identityKey(ancestor)).inserted {
+                ancestor = ancestor.deletingLastPathComponent()
+            }
+        }
+        for folder in folders { taken.insert(identityKey(folder)) }
+
         var planned: [URL] = []
         for target in targets {
             guard LocationPermissions.placement(for: target) == .besideExisting,
@@ -127,17 +143,36 @@ public enum RemoteFolder {
             var choice: URL?
             for name in keepBothNames(for: target.lastPathComponent, isFolder: false) {
                 let candidate = folder.appendingPathComponent(name, isDirectory: false)
-                if !taken.contains(candidate.absoluteString), !(await exists(candidate)) {
+                guard !taken.contains(identityKey(candidate)) else { continue }
+                // Free at the destination both as a file and as a folder.
+                if !(await exists(candidate)),
+                   !(await exists(folder.appendingPathComponent(name, isDirectory: true))) {
                     choice = candidate
                     break
                 }
             }
             let landed = choice ?? folder.appendingPathComponent(
                 UUID().uuidString + ((target.pathExtension.isEmpty) ? "" : ".\(target.pathExtension)"))
-            taken.insert(landed.absoluteString)
+            taken.insert(identityKey(landed))
             planned.append(landed)
         }
         return planned
+    }
+
+    /// A location's identity for collision purposes: scheme, account and decoded path,
+    /// each component in canonical Unicode composition and lowercased, so `a copy`,
+    /// `A copy` and `%61%20copy` are one name, and a precomposed "é" matches a
+    /// decomposed one. Trailing slashes don't matter.
+    public static func identityKey(_ url: URL) -> String {
+        let parts = LocationIdentity.components(url).map { $0.precomposedStringWithCanonicalMapping.lowercased() }
+        return (url.scheme ?? "").lowercased() + "://" + LocationIdentity.Authority(url).display
+            + "/" + parts.joined(separator: "/")
+    }
+
+    /// The folder URL `relative` names beneath `folder`: every component a folder,
+    /// so it keeps the trailing slash a provider may need to tell a folder from a file.
+    public static func folderURL(_ relative: String, beneath folder: URL) -> URL {
+        relative.split(separator: "/").reduce(folder) { $0.appendingPathComponent(String($1), isDirectory: true) }
     }
 
     /// The URL `relative` names beneath `folder`, its last component a file.
