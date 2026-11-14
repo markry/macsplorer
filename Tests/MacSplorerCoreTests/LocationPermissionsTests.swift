@@ -107,6 +107,16 @@ import MacSplorerCore
         #expect(!LocationPermissions.canReplace(shared))
     }
 
+    /// Merging a folder: a protected file inside the destination keeps its contents
+    /// (the copy goes beside it), and a read-only subfolder stops the copy.
+    @Test func mergePlacementPerFile() {
+        #expect(LocationPermissions.placement(for: url("/box/rw/free.txt")) == .write)
+        #expect(LocationPermissions.placement(for: url("/box/rw/new.txt")) == .write)
+        #expect(LocationPermissions.placement(for: url("/box/rw/locked.txt")) == .besideExisting)
+        #expect(LocationPermissions.placement(for: url("/box/ro/anything.txt")) == .refused)
+        #expect(LocationPermissions.placement(for: url("/box/ro/deeper/x.txt")) == .refused)
+    }
+
     @Test func renameInPlaceIsPerFolderToo() {
         #expect(LocationPermissions.renamesInPlace(url("/box/rw/a/")))
         #expect(!LocationPermissions.renamesInPlace(url("/box/copying/a/")))

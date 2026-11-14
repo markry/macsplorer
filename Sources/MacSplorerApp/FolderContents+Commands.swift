@@ -873,16 +873,18 @@ extension FolderContents {
                                   scratch: URL, progress: ProviderProgress) async throws {
         let source = Providers.provider(for: folder)
         let listing = try await RemoteFolder.contents(of: folder, provider: source)
-        for relative in listing.emptyFolders {
-            let empty = relative.isEmpty
-                ? destination
-                : RemoteFolder.url(relative + "/", beneath: destination)
+        let empties = listing.emptyFolders.map { relative in
+            relative.isEmpty ? destination : RemoteFolder.url(relative + "/", beneath: destination)
+        }
+        // Every landing place is checked before anything is written.
+        try Self.checkMergeTargets(listing.files.map { RemoteFolder.url($0.relative, beneath: destination) } + empties)
+        for empty in empties {
             _ = try await provider.createFolder(in: empty.deletingLastPathComponent(),
                                                 named: empty.lastPathComponent)
         }
         for (file, relative) in listing.files {
             try Task.checkCancellation()
-            let placed = RemoteFolder.url(relative, beneath: destination)
+            let placed = await mergeTarget(RemoteFolder.url(relative, beneath: destination), provider: provider)
             progress.advance(items: 0, detail: "“\(relative)”")
             if await provider.canCopyDirectly(file, to: placed) {
                 try await provider.copyDirectly(file, to: placed, progress: nil)
@@ -902,15 +904,35 @@ extension FolderContents {
     /// Empty folders aren't sent: an object store has no folders, only keys that share
     /// a prefix, so a folder with nothing in it has nothing to store.
     private func uploadFolder(_ folder: URL, to destination: URL, provider: FileSystemProvider) async throws {
-        for (file, relative) in Self.files(beneath: folder) {
-            var placed = destination
-            let parts = relative.split(separator: "/").map(String.init)
-            for (index, part) in parts.enumerated() {
-                placed.appendPathComponent(part, isDirectory: index < parts.count - 1)
-            }
+        let files = Self.files(beneath: folder)
+        try Self.checkMergeTargets(files.map { RemoteFolder.url($0.relative, beneath: destination) })
+        for (file, relative) in files {
+            let placed = await mergeTarget(RemoteFolder.url(relative, beneath: destination), provider: provider)
             onStatus?("Uploading “\(relative)”…")
             try await provider.upload(file, to: placed)
         }
+    }
+
+    /// Before a folder copy writes anything: every file must land in a folder that
+    /// takes new items. One that doesn't (a read-only subfolder already at the
+    /// destination) stops the whole copy, with nothing written and, for a move,
+    /// nothing removed from the source.
+    private static func checkMergeTargets(_ targets: [URL]) throws {
+        if let refused = targets.first(where: { LocationPermissions.placement(for: $0) == .refused }) {
+            throw TransferRefusal.readOnlyDestination(
+                LocationPermissions.parent(of: refused)?.lastPathComponent ?? refused.lastPathComponent)
+        }
+    }
+
+    /// Where one file of a folder copy goes: `target`, unless an item already there
+    /// refuses to be replaced — then beside it under a new name, as Keep Both does,
+    /// so a merge never overwrites a protected file.
+    private func mergeTarget(_ target: URL, provider: FileSystemProvider) async -> URL {
+        guard LocationPermissions.placement(for: target) == .besideExisting,
+              await provider.exists(target) else { return target }
+        return await uniqueRemoteDestination(forName: target.lastPathComponent,
+                                             in: target.deletingLastPathComponent(),
+                                             isFolder: false, provider: provider)
     }
 
     /// Every regular file beneath `folder`, with its path relative to it. Symbolic links
@@ -993,12 +1015,16 @@ extension FolderContents {
 /// A transfer the app declines itself, before asking any provider.
 private enum TransferRefusal: LocalizedError {
     case sourceMissing
+    case readOnlyDestination(String)
 
     var errorDescription: String? {
         switch self {
         case .sourceMissing:
             return "The item no longer exists where it was copied from — it was probably "
                  + "already moved. Nothing at the destination was changed."
+        case .readOnlyDestination(let folder):
+            return "“\(folder)” doesn’t accept new items, so the folder couldn’t be copied into it. "
+                 + "Nothing was changed."
         }
     }
 }

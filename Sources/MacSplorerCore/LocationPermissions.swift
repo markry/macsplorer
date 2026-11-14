@@ -65,6 +65,25 @@ public enum LocationPermissions {
         return URL(string: "\(scheme):///")
     }
 
+    /// How one file of a folder being copied or merged may land at `target`.
+    public enum Placement: Equatable {
+        /// Write it there, replacing anything already there.
+        case write
+        /// If something is already there, it refuses to be replaced: put the copy
+        /// beside it under a new name, as Keep Both does.
+        case besideExisting
+        /// The folder it would land in takes no new items.
+        case refused
+    }
+
+    /// The placement for a file arriving at `target` during a folder copy or merge.
+    /// Ask for every file before writing any, so a refusal can stop the whole copy
+    /// with nothing changed.
+    public static func placement(for target: URL) -> Placement {
+        guard let folder = parent(of: target), canAdd(into: folder) else { return .refused }
+        return canReplace(target) ? .write : .besideExisting
+    }
+
     private static func itemPermissions(_ item: URL) -> ItemPermissions? {
         Providers.provider(for: item).permissions(of: item)
     }
