@@ -116,7 +116,10 @@ final class DetailsTableController: NSObject, FolderContentsPresenter {
         // reinstating the header's previous sort would quietly undo that.
         tableView.sortDescriptors = [NSSortDescriptor(key: contents.sortKey,
                                                       ascending: contents.sortAscending)]
+        // Same rows, new columns: a reload clears the selection, so put it back.
+        let selected = tableView.selectedRowIndexes
         tableView.reloadData()
+        tableView.selectRowIndexes(selected, byExtendingSelection: false)
     }
 
     private var fixingColumnOrder = false

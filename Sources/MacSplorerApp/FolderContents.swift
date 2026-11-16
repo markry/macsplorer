@@ -151,7 +151,37 @@ final class FolderContents: NSObject {
 
     @objc private func clipboardDidChange() {
         guard !isRenaming else { return }   // a rebuild would end an in-progress edit
+        // Redrawn to dim (or undim) cut items. A reload clears the selection, so a
+        // plain ⌘C lost the highlight.
+        reloadKeepingSelection()
+    }
+
+    /// The selection as locations, which survive a reload or re-sort where row
+    /// numbers don't.
+    private func selectionKeys() -> Set<String> {
+        Set(selectedIndexes().filter { !items[$0].isParentLink }.map { Self.selectionKey(items[$0].url) })
+    }
+
+    /// Select the rows whose items are in `keys`, after the list was rebuilt.
+    private func reselect(_ keys: Set<String>) {
+        guard !keys.isEmpty else { return }
+        let rows = items.enumerated()
+            .filter { !$0.element.isParentLink && keys.contains(Self.selectionKey($0.element.url)) }
+            .map(\.offset)
+        if !rows.isEmpty { presenter?.selectItems(at: IndexSet(rows)) }
+    }
+
+    /// Local files by path; remote ones by their whole URL, account included.
+    private static func selectionKey(_ url: URL) -> String {
+        url.isFileURL ? url.standardizedFileURL.path : url.absoluteString
+    }
+
+    /// Redraw the list as it stands, keeping the selection: both list and grid
+    /// clear their selection on a reload.
+    private func reloadKeepingSelection() {
+        let keys = selectionKeys()
         presenter?.reloadContents()
+        reselect(keys)
     }
 
     func item(at index: Int) -> FSItem? { items.indices.contains(index) ? items[index] : nil }
@@ -243,19 +273,12 @@ final class FolderContents: NSObject {
         guard folder != nil else { return }
         // Capture the current selection synchronously, before the async reload
         // replaces `items`.
-        let selectedPaths = Set(selectedIndexes()
-            .filter { !items[$0].isParentLink }
-            .map { items[$0].url.standardizedFileURL.path })
+        let keys = selectionKeys()
         Task { @MainActor [weak self] in
             guard let self else { return }
             guard await self.loadItems() else { return }
             self.presenter?.reloadContents()
-            if !selectedPaths.isEmpty {
-                let rows = self.items.enumerated()
-                    .filter { !$0.element.isParentLink && selectedPaths.contains($0.element.url.standardizedFileURL.path) }
-                    .map(\.offset)
-                if !rows.isEmpty { self.presenter?.selectItems(at: IndexSet(rows)) }
-            }
+            self.reselect(keys)
             self.emitStatus()
         }
     }
@@ -365,11 +388,14 @@ final class FolderContents: NSObject {
     // MARK: Sorting
 
     func setSort(key: String, ascending: Bool) {
+        let keys = selectionKeys()
         sortKey = key
         sortAscending = ascending
         sortRealItems()
         composeItems()
+        // The selected items move with the sort; select them where they landed.
         presenter?.reloadContents()
+        reselect(keys)
     }
 
     private func sortRealItems() {

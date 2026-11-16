@@ -74,7 +74,10 @@ final class IconViewController: NSObject, FolderContentsPresenter {
     func setSize(_ size: IconSize) {
         edge = size.thumbnailEdge
         layout.itemSize = size.cellSize
+        // Same items, new size: a reload clears the selection, so put it back.
+        let selected = collectionView.selectionIndexPaths
         collectionView.reloadData()
+        collectionView.selectionIndexPaths = selected
     }
 
     /// Called when the grid becomes the active presenter.
