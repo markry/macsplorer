@@ -278,10 +278,10 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
             let segments = url.pathComponents.filter { $0 != "/" }
             if let last = segments.last { return last }
             if let host = url.host, !host.isEmpty { return host }
-            return url.scheme?.uppercased() ?? "MacSplorer"
+            return url.scheme?.uppercased() ?? AppIdentity.name
         }
         let name = url.lastPathComponent
-        return name.isEmpty ? "MacSplorer" : name
+        return name.isEmpty ? AppIdentity.name : name
     }
 
     /// Update the details table + address bar + title for `url`. Idempotent, so
@@ -962,7 +962,7 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     }
 
     private func configureStatusLabel() {
-        statusLabel.stringValue = "MacSplorer \(MacSplorer.displayVersion)"
+        statusLabel.stringValue = "\(AppIdentity.name) \(MacSplorer.displayVersion)"
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.lineBreakMode = .byTruncatingMiddle

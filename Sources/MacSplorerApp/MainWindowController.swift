@@ -30,7 +30,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "MacSplorer"
+        window.title = AppIdentity.name
         window.minSize = NSSize(width: 680, height: 380)
         // We manage our own browser-style tabs, so keep the system from ever
         // merging windows into native tabs.
@@ -93,7 +93,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             self.refreshTabStrip()
         }
         panes.append(pane)
-        titles.append("MacSplorer")
+        titles.append(AppIdentity.name)
         _ = pane.view // force load → initial navigation fires onTitleChange
         selectTab(at: panes.count - 1)
         if focusAddress { pane.focusAddressField() }
@@ -124,7 +124,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
             view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
         ])
-        window?.title = titles.indices.contains(index) ? titles[index] : "MacSplorer"
+        window?.title = titles.indices.contains(index) ? titles[index] : AppIdentity.name
         refreshTabStrip()
     }
 

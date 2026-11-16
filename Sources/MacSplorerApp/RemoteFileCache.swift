@@ -44,7 +44,8 @@ final class RemoteFileCache {
     private init() {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        root = caches.appendingPathComponent("net.ryland.macsplorer/remote", isDirectory: true)
+        // Per app: an edition running beside the public MacSplorer keeps its own copies.
+        root = caches.appendingPathComponent("\(AppIdentity.bundleID)/remote", isDirectory: true)
     }
 
     /// A local file holding `url`'s bytes, downloading if this session hasn't already.

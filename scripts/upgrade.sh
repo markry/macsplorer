@@ -64,7 +64,9 @@ fi
 
 # ---- quit the running app ---------------------------------------------------
 echo "==> Quitting MacSplorer if it's running"
-osascript -e 'quit app "MacSplorer"' 2>/dev/null || true
+# By bundle identifier, so an edition running beside it (its own identifier) is
+# left alone.
+osascript -e 'quit app id "net.ryland.macsplorer"' 2>/dev/null || true
 pkill -f "MacSplorer.app/Contents/MacOS/MacSplorer" 2>/dev/null || true
 sleep 1
 

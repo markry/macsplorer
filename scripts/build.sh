@@ -20,7 +20,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 CONFIG="${1:-release}"
-APP="build/MacSplorer.app"
+# An edition that runs beside the public app (its own name, identifier and icon,
+# so macOS keeps their settings apart) is built with:
+#   APP_NAME="MacSplorer Acme" BUNDLE_ID=com.example.macsplorer.acme \
+#     APP_ICON=path/to/Acme.icns NO_INSTALL=1 bash scripts/build.sh
+APP_NAME="${APP_NAME:-MacSplorer}"
+BUNDLE_ID="${BUNDLE_ID:-}"
+APP_ICON="${APP_ICON:-Resources/AppIcon.icns}"
+APP="build/$APP_NAME.app"
 
 echo "==> swift build ($CONFIG)"
 swift build -c "$CONFIG"
@@ -49,7 +56,13 @@ fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
 echo "==> version $VERSION"
-cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp "$APP_ICON" "$APP/Contents/Resources/AppIcon.icns"
+if [ "$APP_NAME" != "MacSplorer" ] || [ -n "$BUNDLE_ID" ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$APP/Contents/Info.plist"
+    [ -n "$BUNDLE_ID" ] && /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Contents/Info.plist"
+    echo "==> edition: $APP_NAME (${BUNDLE_ID:-net.ryland.macsplorer})"
+fi
 
 # Prefer a stable Developer ID identity so macOS TCC permissions (folder access,
 # Full Disk Access) persist across rebuilds — ad-hoc signing gets a new code
@@ -81,16 +94,18 @@ fi
 # path for Full Disk Access (with the Developer ID identity, that grant persists
 # across rebuilds). The build/ copy remains as the artifact for releases.
 echo "==> installing to /Applications"
-pkill -f "MacSplorer.app/Contents/MacOS/MacSplorer" 2>/dev/null || true
+# Only this app: an edition built here leaves the public MacSplorer running, and
+# the other way round.
+pkill -f "/$APP_NAME.app/Contents/MacOS/MacSplorer" 2>/dev/null || true
 sleep 0.5
-rm -rf "/Applications/MacSplorer.app"
-ditto "$APP" "/Applications/MacSplorer.app"
+rm -rf "/Applications/$APP_NAME.app"
+ditto "$APP" "/Applications/$APP_NAME.app"
 
 # Kill, reinstall, relaunch: a build ends with the new version running, so the
 # app isn't left closed after an install.
 echo "==> relaunching"
-open "/Applications/MacSplorer.app"
+open "/Applications/$APP_NAME.app"
 
 echo "==> done."
-echo "    Installed + relaunched: /Applications/MacSplorer.app"
+echo "    Installed + relaunched: /Applications/$APP_NAME.app"
 echo "    Build copy:             $APP"

@@ -307,7 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     // MARK: Menu
 
     private func makeMainMenu() -> NSMenu {
-        let appName = "MacSplorer"
+        let appName = AppIdentity.name
         let mainMenu = NSMenu()
 
         // Application menu (About + Quit).
