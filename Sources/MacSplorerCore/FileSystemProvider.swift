@@ -22,6 +22,12 @@ public protocol FileSystemProvider {
     /// where something happens. Nil reads as "this location". Default: nil.
     var displayName: String? { get }
 
+    /// How this backend compares names: whether "A" and "a", or an accented letter
+    /// written two ways, are different items. A folder copy refuses, before writing
+    /// anything, when two incoming names would be one item here. Default:
+    /// `.forgiving` (neither distinguishes), the safe assumption. S3 is `.exact`.
+    var nameRules: NameRules { get }
+
     /// What can be done *within* the folder at `url`: whether items can be added to
     /// it, removed or renamed in it (`canWrite`, `canRename`), and whether renames
     /// there happen in place (`atomicRename`). Lets one volume hold a read-only area,
@@ -202,6 +208,8 @@ public extension FileSystemProvider {
     func canMoveDirectly(_ source: URL, to destination: URL) -> Bool { false }
 
     var displayName: String? { nil }
+
+    var nameRules: NameRules { .forgiving }
 
     func capabilities(at url: URL) -> ProviderCapabilities { capabilities }
 

@@ -880,6 +880,7 @@ extension FolderContents {
         // Every landing place is checked, and every destination name settled, before
         // anything is written.
         try Self.checkMergeTargets(targets + empties)
+        try Self.checkNameClashes(targets, folders: empties, provider: provider)
         let planned = await RemoteFolder.planDestinations(targets, reserving: empties) {
             await provider.exists($0)
         }
@@ -914,10 +915,22 @@ extension FolderContents {
         let files = Self.files(beneath: folder)
         let targets = files.map { RemoteFolder.url($0.relative, beneath: destination) }
         try Self.checkMergeTargets(targets)
+        try Self.checkNameClashes(targets, provider: provider)
         let planned = await RemoteFolder.planDestinations(targets) { await provider.exists($0) }
         for ((file, relative), placed) in zip(files, planned) {
             onStatus?("Uploading “\(relative)”…")
             try await provider.upload(file, to: placed)
+        }
+    }
+
+    /// Before a folder copy writes anything: no two incoming items may be one item at
+    /// the destination under its name rules ("A" and "a" from a case-sensitive source
+    /// into a backend that doesn't tell them apart). Otherwise one would silently
+    /// replace the other, and a move would then delete the source of the lost one.
+    private static func checkNameClashes(_ targets: [URL], folders: [URL] = [],
+                                         provider: FileSystemProvider) throws {
+        if let (a, b) = RemoteFolder.firstNameClash(targets, folders: folders, rules: provider.nameRules) {
+            throw RemoteFolderError.nameClash(a.lastPathComponent, b.lastPathComponent)
         }
     }
 

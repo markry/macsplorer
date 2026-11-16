@@ -41,6 +41,12 @@ import MacSplorerCore
         #expect(!LocationPermissions.canRemove(profile))
     }
 
+    /// S3 keys are exact, so a folder holding "A" and "a" copies into S3 untouched.
+    @Test func s3NamesAreExact() {
+        #expect(S3Provider(url: URL(string: "s3:///")!).nameRules == .exact)
+        #expect(LocalProvider().nameRules == .forgiving)
+    }
+
     @Test func localRenameIsAtomic() {
         #expect(LocalProvider().capabilities.atomicRename == true)
     }

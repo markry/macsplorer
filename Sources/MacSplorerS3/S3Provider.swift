@@ -21,6 +21,9 @@ public final class S3Provider: FileSystemProvider {
 
     public var displayName: String? { "S3" }
 
+    /// Keys are compared byte for byte: "A" and "a" are different objects.
+    public var nameRules: NameRules { .exact }
+
     public var scheme: String { S3Location.scheme }
 
     public var capabilities: ProviderCapabilities {

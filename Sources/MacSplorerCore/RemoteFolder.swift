@@ -48,6 +48,18 @@ public enum RemoteFolder {
                                 onFile: @Sendable (String) async -> Void = { _ in }) async throws {
         let fm = FileManager.default
         let listing = try await contents(of: folder, provider: provider)
+        // Two names this disk would take for one item ("A" and "a" on a case-
+        // insensitive volume) would silently leave only one: refuse up front.
+        let caseSensitive = (try? destination.deletingLastPathComponent()
+            .resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+            .volumeSupportsCaseSensitiveNames) ?? false
+        let rules = NameRules(caseSensitive: caseSensitive == true, compositionSensitive: false)
+        let base = URL(fileURLWithPath: "/", isDirectory: true)
+        if let (a, b) = firstNameClash(listing.files.map { url($0.relative, beneath: base) },
+                                       folders: listing.emptyFolders.map { folderURL($0, beneath: base) },
+                                       rules: rules) {
+            throw RemoteFolderError.nameClash(String(a.path.dropFirst()), String(b.path.dropFirst()))
+        }
         let partial = destination.deletingLastPathComponent().appendingPathComponent(
             ".\(destination.lastPathComponent).partial-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: partial, withIntermediateDirectories: true)
@@ -130,7 +142,12 @@ public enum RemoteFolder {
                 ancestor = ancestor.deletingLastPathComponent()
             }
         }
-        for folder in folders { taken.insert(identityKey(folder)) }
+        for folder in folders {
+            var ancestor = folder
+            while !LocationIdentity.components(ancestor).isEmpty, taken.insert(identityKey(ancestor)).inserted {
+                ancestor = ancestor.deletingLastPathComponent()
+            }
+        }
 
         var planned: [URL] = []
         for target in targets {
@@ -163,10 +180,48 @@ public enum RemoteFolder {
     /// each component in canonical Unicode composition and lowercased, so `a copy`,
     /// `A copy` and `%61%20copy` are one name, and a precomposed "é" matches a
     /// decomposed one. Trailing slashes don't matter.
-    public static func identityKey(_ url: URL) -> String {
-        let parts = LocationIdentity.components(url).map { $0.precomposedStringWithCanonicalMapping.lowercased() }
+    public static func identityKey(_ url: URL, rules: NameRules = .forgiving) -> String {
+        let parts = LocationIdentity.components(url).map { part -> String in
+            var name = part
+            if !rules.caseSensitive { name = name.lowercased() }
+            // Swift's String equality already treats the two forms of "é" as equal, so
+            // when composition matters the key is the name's bytes.
+            return rules.compositionSensitive
+                ? name.utf8.map { String($0, radix: 16) }.joined(separator: ".")
+                : name.precomposedStringWithCanonicalMapping
+        }
         return (url.scheme ?? "").lowercased() + "://" + LocationIdentity.Authority(url).display
             + "/" + parts.joined(separator: "/")
+    }
+
+    /// Two incoming items that the destination, comparing names by `rules`, would
+    /// take for one: two files ("A" and "a" arriving from a case-sensitive source),
+    /// or a file and a folder ("A" and "a/…"). Nil when every item lands apart.
+    /// `folders` are the incoming empty folders; the folders the files sit in are
+    /// worked out from `targets`.
+    public static func firstNameClash(_ targets: [URL], folders: [URL] = [],
+                                      rules: NameRules) -> (URL, URL)? {
+        var seen: [String: (url: URL, isFolder: Bool)] = [:]
+        func claim(_ url: URL, isFolder: Bool) -> (URL, URL)? {
+            let key = identityKey(url, rules: rules)
+            if let earlier = seen[key] {
+                // The same folder reached twice is fine; anything else is one item twice.
+                return (earlier.isFolder && isFolder) ? nil : (earlier.url, url)
+            }
+            seen[key] = (url, isFolder)
+            return nil
+        }
+        for target in targets {
+            if let clash = claim(target, isFolder: false) { return clash }
+        }
+        for target in targets + folders {
+            var ancestor = target.hasDirectoryPath ? target : target.deletingLastPathComponent()
+            while !LocationIdentity.components(ancestor).isEmpty {
+                if let clash = claim(ancestor, isFolder: true) { return clash }
+                ancestor = ancestor.deletingLastPathComponent()
+            }
+        }
+        return nil
     }
 
     /// The folder URL `relative` names beneath `folder`: every component a folder,
@@ -193,11 +248,36 @@ public enum RemoteFolder {
 public enum RemoteFolderError: LocalizedError {
     /// A name in the remote folder that can't be written as a local file name.
     case unsafeName(String)
+    /// Two incoming items the destination would take for one.
+    case nameClash(String, String)
 
     public var errorDescription: String? {
         switch self {
         case .unsafeName(let name):
             return "The folder contains an item named “\(name)”, which can’t be copied safely."
+        case .nameClash(let a, let b):
+            return "“\(a)” and “\(b)” would be the same item at the destination, which doesn’t "
+                + "tell those names apart, so one would replace the other. Nothing was copied. "
+                + "Rename one of them first."
         }
     }
+}
+
+/// How a backend compares item names. Percent-encoding never distinguishes names.
+public struct NameRules: Sendable, Equatable {
+    /// "A" and "a" are different items.
+    public var caseSensitive: Bool
+    /// An accented letter written as one character and as letter-plus-accent are
+    /// different items.
+    public var compositionSensitive: Bool
+
+    public init(caseSensitive: Bool, compositionSensitive: Bool) {
+        self.caseSensitive = caseSensitive
+        self.compositionSensitive = compositionSensitive
+    }
+
+    /// Neither distinguishes: the safe assumption for a backend that doesn't say.
+    public static let forgiving = NameRules(caseSensitive: false, compositionSensitive: false)
+    /// Names compared exactly, as S3 compares keys.
+    public static let exact = NameRules(caseSensitive: true, compositionSensitive: true)
 }
