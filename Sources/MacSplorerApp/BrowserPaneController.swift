@@ -1191,13 +1191,18 @@ final class BrowserPaneController: NSViewController, NSTextFieldDelegate, NSSpli
     private func makeFolderTree() -> NSScrollView {
         let nameColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
         nameColumn.title = "Name"
+        // Sized to its content by the outline view (fitColumnToContent), not to the
+        // pane, so long and deep names scroll sideways instead of being cut off.
+        nameColumn.resizingMask = []
         outlineView.addTableColumn(nameColumn)
         outlineView.outlineTableColumn = nameColumn
         outlineView.headerView = nil
+        outlineView.columnAutoresizingStyle = .noColumnAutoresizing
 
         let scroll = NSScrollView()
         scroll.documentView = outlineView
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
         scroll.translatesAutoresizingMaskIntoConstraints = false
